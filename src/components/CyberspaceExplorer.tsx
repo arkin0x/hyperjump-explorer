@@ -562,7 +562,7 @@ export default function CyberspaceExplorer(): React.JSX.Element {
           </div>
 
           {!panelCollapsed && (
-            <div className="mt-2 flex-1 overflow-y-auto overscroll-contain pr-1">
+            <div className="scrollbar-none mt-2 flex-1 overflow-y-auto overscroll-contain pr-1">
               <div className="text-xs text-zinc-300">{status}</div>
 
               <div className="mt-3 grid grid-cols-2 gap-2">

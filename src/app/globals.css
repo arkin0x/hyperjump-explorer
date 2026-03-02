@@ -34,3 +34,14 @@ body {
 canvas {
   display: block;
 }
+
+@layer utilities {
+  /* Hide scrollbars while keeping scroll functionality. */
+  .scrollbar-none {
+    -ms-overflow-style: none; /* IE/Edge */
+    scrollbar-width: none; /* Firefox */
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none; /* Chrome/Safari */
+  }
+}
