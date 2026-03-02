@@ -86,6 +86,7 @@ export default function CyberspaceExplorer(): React.JSX.Element {
 
   const [panelCollapsed, setPanelCollapsed] = useState(false)
   const [showLines, setShowLines] = useState(true)
+  const [multiView, setMultiView] = useState(false)
 
   const [detailsCollapsed, setDetailsCollapsed] = useState(true)
 
@@ -463,6 +464,7 @@ export default function CyberspaceExplorer(): React.JSX.Element {
           zoomMarkerSeq={zoomMarkerSeq}
           faceBlackSunSeq={faceBlackSunSeq}
           showLines={showLines}
+          multiView={multiView}
           mainChainHeights={baseDisplayHeights}
           favoriteHeights={favorites}
           markerPosition={markerPos ? { x: markerPos.xKm, y: markerPos.yKm, z: markerPos.zKm } : null}
@@ -471,7 +473,11 @@ export default function CyberspaceExplorer(): React.JSX.Element {
         />
       </div>
 
-      <div className="pointer-events-none absolute inset-0 p-4">
+      <div
+        className={
+          'pointer-events-none absolute inset-0 p-4 flex flex-col ' + (panelCollapsed ? 'justify-end' : 'justify-start')
+        }
+      >
         <div
           className={
             'pointer-events-auto rounded-xl border border-white/10 bg-black/60 text-sm text-zinc-100 backdrop-blur ' +
@@ -555,7 +561,8 @@ export default function CyberspaceExplorer(): React.JSX.Element {
                   type="button"
                   onClick={() => setZoomSelectedSeq((x) => x + 1)}
                   className="rounded-lg bg-white/10 px-3 py-1.5 hover:bg-white/15"
-                  disabled={selectedHeight === null}
+                  disabled={selectedHeight === null || multiView}
+                  title={multiView ? 'Disable 3-up view to use orbit controls' : undefined}
                 >
                   Zoom to selected
                 </button>
@@ -563,6 +570,8 @@ export default function CyberspaceExplorer(): React.JSX.Element {
                   type="button"
                   onClick={() => setZoomAllSeq((x) => x + 1)}
                   className="rounded-lg bg-white/10 px-3 py-1.5 hover:bg-white/15"
+                  disabled={multiView}
+                  title={multiView ? 'Disable 3-up view to use orbit controls' : undefined}
                 >
                   Zoom to all
                 </button>
@@ -571,7 +580,12 @@ export default function CyberspaceExplorer(): React.JSX.Element {
                   type="button"
                   onClick={() => setFaceBlackSunSeq((x) => x + 1)}
                   className="rounded-lg bg-white/10 px-3 py-1.5 hover:bg-white/15"
-                  title="Canonical orientation: look toward the black sun (-Z)"
+                  title={
+                    multiView
+                      ? 'Disable 3-up view to use orbit controls'
+                      : 'Canonical orientation: look toward the black sun (-Z)'
+                  }
+                  disabled={multiView}
                 >
                   Face black sun
                 </button>
@@ -583,6 +597,15 @@ export default function CyberspaceExplorer(): React.JSX.Element {
                   title="Toggle connecting lines"
                 >
                   Lines {showLines ? 'ON' : 'OFF'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setMultiView((v) => !v)}
+                  className="rounded-lg bg-white/10 px-3 py-1.5 hover:bg-white/15"
+                  title="Toggle 3-up axis-aligned view"
+                >
+                  3-up {multiView ? 'ON' : 'OFF'}
                 </button>
 
                 <button

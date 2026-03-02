@@ -21,6 +21,7 @@ type Props = {
   zoomMarkerSeq: number
   faceBlackSunSeq?: number
   showLines: boolean
+  multiView: boolean
   // Heights that participate in the "main" chain (e.g. the most-recent window).
   // This prevents accidentally drawing lines from that chain to unrelated blocks
   // that are also rendered (selected block, favorites, nearest, etc.).
@@ -568,22 +569,22 @@ function CameraController({
     return new THREE.Vector3(b.position.x, b.position.y, b.position.z)
   }, [blocks, selectedHeight])
 
-  const applyOrbit = (camPos: THREE.Vector3) => {
+  const applyOrbit = (camPos: THREE.Vector3, target: THREE.Vector3) => {
     camera.position.copy(camPos)
-    camera.lookAt(0, 0, 0)
-    controlsRef.current?.target.set(0, 0, 0)
+    camera.lookAt(target)
+    controlsRef.current?.target.copy(target)
     controlsRef.current?.update()
   }
 
   const zoomToAll = () => {
     const half = dataspaceHalfAxisKm()
-    applyOrbit(new THREE.Vector3(half * 1.35, half * 0.55, half * 1.25))
+    applyOrbit(new THREE.Vector3(half * 1.35, half * 0.55, half * 1.25), new THREE.Vector3(0, 0, 0))
   }
 
   const faceBlackSun = () => {
     const half = dataspaceHalfAxisKm()
     // Put the camera on +Z looking toward the origin so -Z is visually "forward".
-    applyOrbit(new THREE.Vector3(0, half * 0.55, half * 1.35))
+    applyOrbit(new THREE.Vector3(0, half * 0.55, half * 1.35), new THREE.Vector3(0, 0, 0))
   }
 
   const zoomToSelected = () => {
@@ -593,16 +594,17 @@ function CameraController({
     const r = selectedPos.length()
     const dir = r > 0 ? selectedPos.clone().multiplyScalar(1 / r) : new THREE.Vector3(1, 0.55, 1).normalize()
     const camPos = dir.multiplyScalar(r + 12_000)
-    applyOrbit(camPos)
+    applyOrbit(camPos, new THREE.Vector3(0, 0, 0))
   }
 
   const zoomToMarker = () => {
     if (!markerPosition) return
 
+    // Orbit center should be the marker coordinate.
     const r = markerPosition.length()
     const dir = r > 0 ? markerPosition.clone().multiplyScalar(1 / r) : new THREE.Vector3(1, 0.55, 1).normalize()
-    const camPos = dir.multiplyScalar(r + 35_000)
-    applyOrbit(camPos)
+    const camPos = markerPosition.clone().add(dir.multiplyScalar(35_000))
+    applyOrbit(camPos, markerPosition)
   }
 
   useEffect(() => {
@@ -634,23 +636,27 @@ function CameraController({
   return <OrbitControls ref={controlsRef} enableDamping dampingFactor={0.08} />
 }
 
-export default function CyberspaceScene(props: Props): React.JSX.Element {
-  const blocks = useMemo(() => props.blocks.map((b) => ({ ...b, position: csToThree(b.position) })), [props.blocks])
-  const mainChainSet = useMemo(() => new Set(props.mainChainHeights ?? []), [props.mainChainHeights])
-  const favoriteSet = useMemo(() => new Set(props.favoriteHeights ?? []), [props.favoriteHeights])
-  const highlightSet = useMemo(() => new Set(props.highlightHeights ?? []), [props.highlightHeights])
-
-  const markerPos = useMemo(() => {
-    if (!props.markerPosition) return null
-    return new THREE.Vector3(props.markerPosition.x, props.markerPosition.y, props.markerPosition.z)
-  }, [props.markerPosition])
-
+function SceneContents({
+  blocks,
+  selectedHeight,
+  showLines,
+  mainChainSet,
+  favoriteSet,
+  highlightSet,
+  markerPos,
+  onSelectHeight,
+}: {
+  blocks: BlockPoint[]
+  selectedHeight: number | null
+  showLines: boolean
+  mainChainSet: Set<number>
+  favoriteSet: Set<number>
+  highlightSet: Set<number>
+  markerPos: THREE.Vector3 | null
+  onSelectHeight?: (height: number) => void
+}): React.JSX.Element {
   return (
-    <Canvas
-      camera={{ fov: 55, near: 0.1, far: 2_000_000 }}
-      gl={{ antialias: true, alpha: true }}
-      style={{ width: '100%', height: '100%' }}
-    >
+    <>
       <color attach="background" args={['#05010a']} />
       <ambientLight intensity={0.45} />
       <directionalLight position={[1, 0.8, 1.2]} intensity={0.9} />
@@ -668,11 +674,121 @@ export default function CyberspaceScene(props: Props): React.JSX.Element {
 
       <BlocksAndLines
         blocks={blocks}
+        selectedHeight={selectedHeight}
+        showLines={showLines}
+        mainChainSet={mainChainSet}
+        favoriteSet={favoriteSet}
+        highlightSet={highlightSet}
+        onSelectHeight={onSelectHeight}
+      />
+    </>
+  )
+}
+
+type Axis = 'x' | 'y' | 'z'
+
+function FixedAxisCamera({ axis, half }: { axis: Axis; half: number }): null {
+  const { camera, size } = useThree()
+
+  useEffect(() => {
+    const cam = camera as THREE.PerspectiveCamera
+    const fovDeg = typeof cam.fov === 'number' ? cam.fov : 55
+    const fov = THREE.MathUtils.degToRad(fovDeg)
+    const aspect = size.height > 0 ? size.width / size.height : 1
+
+    // Distance needed so a square of size (2*half) fits fully in view.
+    // Bump margin a bit so the initial 3-up view is slightly zoomed out.
+    const margin = 1.14
+    const tan = Math.tan(fov / 2)
+    const dist = (half * margin) / tan * Math.max(1, 1 / Math.max(0.001, aspect))
+
+    const pos = new THREE.Vector3(0, 0, 0)
+    if (axis === 'x') pos.set(dist, 0, 0)
+    if (axis === 'y') pos.set(0, dist, 0)
+    if (axis === 'z') pos.set(0, 0, dist)
+
+    // Looking straight down the Y axis means the default up vector (0,1,0) is colinear with the view direction.
+    // Pick a stable up vector so the orientation doesn't become undefined.
+    if (axis === 'y') cam.up.set(0, 0, -1)
+    else cam.up.set(0, 1, 0)
+
+    cam.position.copy(pos)
+    cam.lookAt(0, 0, 0)
+    cam.updateProjectionMatrix()
+  }, [axis, camera, half, size.height, size.width])
+
+  return null
+}
+
+function ViewLabel({ text }: { text: string }): React.JSX.Element {
+  return (
+    <div className="pointer-events-none absolute left-2 top-2 rounded bg-black/50 px-2 py-1 font-mono text-[10px] text-zinc-200">
+      {text}
+    </div>
+  )
+}
+
+export default function CyberspaceScene(props: Props): React.JSX.Element {
+  const blocks = useMemo(() => props.blocks.map((b) => ({ ...b, position: csToThree(b.position) })), [props.blocks])
+  const mainChainSet = useMemo(() => new Set(props.mainChainHeights ?? []), [props.mainChainHeights])
+  const favoriteSet = useMemo(() => new Set(props.favoriteHeights ?? []), [props.favoriteHeights])
+  const highlightSet = useMemo(() => new Set(props.highlightHeights ?? []), [props.highlightHeights])
+
+  const markerPos = useMemo(() => {
+    if (!props.markerPosition) return null
+    return new THREE.Vector3(props.markerPosition.x, props.markerPosition.y, props.markerPosition.z)
+  }, [props.markerPosition])
+
+  if (props.multiView) {
+    const half = dataspaceHalfAxisKm()
+
+    const cell = (axis: Axis, label: string) => (
+      <div className="relative h-full w-full overflow-hidden">
+        <Canvas
+          camera={{ fov: 55, near: 0.1, far: 2_000_000 }}
+          gl={{ antialias: true, alpha: true }}
+          style={{ width: '100%', height: '100%' }}
+        >
+          <FixedAxisCamera axis={axis} half={half} />
+          <SceneContents
+            blocks={blocks}
+            selectedHeight={props.selectedHeight}
+            showLines={props.showLines}
+            mainChainSet={mainChainSet}
+            favoriteSet={favoriteSet}
+            highlightSet={highlightSet}
+            markerPos={markerPos}
+            onSelectHeight={props.onSelectHeight}
+          />
+          <OrbitControls enableRotate={false} enablePan={false} enableDamping dampingFactor={0.08} />
+        </Canvas>
+        <ViewLabel text={label + ' (scroll to zoom)'} />
+      </div>
+    )
+
+    return (
+      <div className="grid h-full w-full grid-cols-1 gap-px bg-white/10 md:grid-cols-3">
+        {cell('y', 'Y+ → Y-')}
+        {cell('z', 'Z+ → Z- (black sun)')}
+        {cell('x', 'X+ → X-')}
+      </div>
+    )
+  }
+
+  return (
+    <Canvas
+      camera={{ fov: 55, near: 0.1, far: 2_000_000 }}
+      gl={{ antialias: true, alpha: true }}
+      style={{ width: '100%', height: '100%' }}
+    >
+      <SceneContents
+        blocks={blocks}
         selectedHeight={props.selectedHeight}
         showLines={props.showLines}
         mainChainSet={mainChainSet}
         favoriteSet={favoriteSet}
         highlightSet={highlightSet}
+        markerPos={markerPos}
         onSelectHeight={props.onSelectHeight}
       />
 
