@@ -142,6 +142,31 @@ export default function CyberspaceExplorer(): React.JSX.Element {
     newModeRef.current = newMode
   }, [newMode])
 
+  // Space toggles the main panel collapse state.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== ' ' && e.code !== 'Space') return
+      if (e.altKey || e.ctrlKey || e.metaKey) return
+
+      const t = e.target as HTMLElement | null
+      const tag = t?.tagName?.toLowerCase()
+      const isEditable =
+        tag === 'input' ||
+        tag === 'textarea' ||
+        tag === 'select' ||
+        t?.isContentEditable === true ||
+        t?.getAttribute?.('role') === 'textbox'
+
+      if (isEditable) return
+
+      e.preventDefault()
+      setPanelCollapsed((v) => !v)
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
+
   const baseDisplayHeights = useMemo(() => {
     if (latestSeenHeight === null) return []
     return computeDisplayHeights(latestSeenHeight, blockSpan)
@@ -480,8 +505,8 @@ export default function CyberspaceExplorer(): React.JSX.Element {
       >
         <div
           className={
-            'pointer-events-auto rounded-xl border border-white/10 bg-black/60 text-sm text-zinc-100 backdrop-blur ' +
-            (panelCollapsed ? 'w-auto p-2' : 'w-full max-w-xl p-4')
+            'pointer-events-auto rounded-xl border border-white/10 bg-black/60 text-sm text-zinc-100 backdrop-blur max-h-[calc(100dvh-2rem)] ' +
+            (panelCollapsed ? 'w-auto p-2' : 'w-full max-w-xl p-4 flex flex-col overflow-hidden')
           }
         >
           <div className="flex items-center justify-between gap-3">
@@ -489,12 +514,24 @@ export default function CyberspaceExplorer(): React.JSX.Element {
               <button
                 type="button"
                 onClick={() => setPanelCollapsed((v) => !v)}
-                className="rounded-lg bg-white/10 px-2 py-1.5 hover:bg-white/15"
-                title={panelCollapsed ? 'Expand panel' : 'Collapse panel'}
-                aria-label={panelCollapsed ? 'Expand panel' : 'Collapse panel'}
+                className={
+                  'rounded-lg px-2 py-1.5 hover:bg-white/15 ' +
+                  (panelCollapsed ? 'bg-purple-500/25 text-purple-200' : 'bg-white/10')
+                }
+                title={panelCollapsed ? 'Expand panel (Space)' : 'Collapse panel (Space)'}
+                aria-label={panelCollapsed ? 'Expand panel (Space)' : 'Collapse panel (Space)'}
               >
                 ☰
               </button>
+
+              {!panelCollapsed && (
+                <span
+                  className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-[10px] text-zinc-200"
+                  title="Shortcut: Space toggles the panel"
+                >
+                  Space
+                </span>
+              )}
 
               {!panelCollapsed && (
                 <>
@@ -525,8 +562,8 @@ export default function CyberspaceExplorer(): React.JSX.Element {
           </div>
 
           {!panelCollapsed && (
-            <>
-              <div className="mt-2 text-xs text-zinc-300">{status}</div>
+            <div className="mt-2 flex-1 overflow-y-auto overscroll-contain pr-1">
+              <div className="text-xs text-zinc-300">{status}</div>
 
               <div className="mt-3 grid grid-cols-2 gap-2">
                 <div className="rounded-lg bg-white/5 p-2">
@@ -593,7 +630,10 @@ export default function CyberspaceExplorer(): React.JSX.Element {
                 <button
                   type="button"
                   onClick={() => setShowLines((v) => !v)}
-                  className="rounded-lg bg-white/10 px-3 py-1.5 hover:bg-white/15"
+                  className={
+                    'rounded-lg px-3 py-1.5 hover:bg-white/15 ' +
+                    (showLines ? 'bg-purple-500/25 text-purple-200 hover:bg-purple-500/30' : 'bg-white/10')
+                  }
                   title="Toggle connecting lines"
                 >
                   Lines {showLines ? 'ON' : 'OFF'}
@@ -602,7 +642,10 @@ export default function CyberspaceExplorer(): React.JSX.Element {
                 <button
                   type="button"
                   onClick={() => setMultiView((v) => !v)}
-                  className="rounded-lg bg-white/10 px-3 py-1.5 hover:bg-white/15"
+                  className={
+                    'rounded-lg px-3 py-1.5 hover:bg-white/15 ' +
+                    (multiView ? 'bg-purple-500/25 text-purple-200 hover:bg-purple-500/30' : 'bg-white/10')
+                  }
                   title="Toggle 3-up axis-aligned view"
                 >
                   3-up {multiView ? 'ON' : 'OFF'}
@@ -611,7 +654,10 @@ export default function CyberspaceExplorer(): React.JSX.Element {
                 <button
                   type="button"
                   onClick={() => setShowFavorites((v) => !v)}
-                  className="rounded-lg bg-white/10 px-3 py-1.5 hover:bg-white/15"
+                  className={
+                    'rounded-lg px-3 py-1.5 hover:bg-white/15 ' +
+                    (showFavorites ? 'bg-purple-500/25 text-purple-200 hover:bg-purple-500/30' : 'bg-white/10')
+                  }
                   title="Toggle rendering of favorited blocks"
                 >
                   Favorites {showFavorites ? 'ON' : 'OFF'}
@@ -838,7 +884,7 @@ export default function CyberspaceExplorer(): React.JSX.Element {
               </div>
 
               <div className="mt-2 text-[11px] text-zinc-400">Relay: {relayUrl}</div>
-            </>
+            </div>
           )}
         </div>
       </div>
