@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "check:vectors": "node scripts/check_visualization_vectors.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.7",

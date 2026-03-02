@@ -19,6 +19,7 @@ type Props = {
   zoomAllSeq: number
   zoomSelectedSeq: number
   zoomMarkerSeq: number
+  faceBlackSunSeq?: number
   showLines: boolean
   // Heights that participate in the "main" chain (e.g. the most-recent window).
   // This prevents accidentally drawing lines from that chain to unrelated blocks
@@ -43,7 +44,7 @@ function lerp(a: number, b: number, t: number): number {
 }
 
 // Render convention: match Cyberspace axes directly.
-// +Z points toward the black sun, +Y toward the top grid, and looking toward +Z, screen-right is +X.
+// -Z points toward the black sun, +Y toward the top grid, and looking toward -Z, screen-right is +X.
 function csToThree(p: { x: number; y: number; z: number }): { x: number; y: number; z: number } {
   return { x: p.x, y: p.y, z: p.z }
 }
@@ -141,8 +142,9 @@ function BlackSun(): React.JSX.Element {
   const half = dataspaceHalfAxisKm()
   const a = earthEquatorialRadiusKm()
 
+  // Canonical convention: black sun sits on the -Z boundary and faces +Z (toward the origin).
   return (
-    <mesh position={[0, 0, half]} rotation={[0, Math.PI, 0]}>
+    <mesh position={[0, 0, -half]} rotation={[0, 0, 0]}>
       <circleGeometry args={[a * 2.2, 96]} />
       <meshStandardMaterial color={BLACK_SUN_COLOR} side={THREE.FrontSide} transparent opacity={0.55} roughness={0.4} />
     </mesh>
@@ -543,6 +545,7 @@ type CameraControllerProps = {
   zoomSelectedSeq: number
   markerPosition: THREE.Vector3 | null
   zoomMarkerSeq: number
+  faceBlackSunSeq?: number
 }
 
 function CameraController({
@@ -552,6 +555,7 @@ function CameraController({
   zoomSelectedSeq,
   markerPosition,
   zoomMarkerSeq,
+  faceBlackSunSeq,
 }: CameraControllerProps): React.JSX.Element {
   const controlsRef = useRef<React.ElementRef<typeof OrbitControls> | null>(null)
   const { camera } = useThree()
@@ -563,30 +567,41 @@ function CameraController({
     return new THREE.Vector3(b.position.x, b.position.y, b.position.z)
   }, [blocks, selectedHeight])
 
-  const zoomToAll = () => {
-    const half = dataspaceHalfAxisKm()
-    camera.position.set(half * 1.35, half * 0.55, half * 1.25)
+  const applyOrbit = (camPos: THREE.Vector3) => {
+    camera.position.copy(camPos)
     camera.lookAt(0, 0, 0)
     controlsRef.current?.target.set(0, 0, 0)
     controlsRef.current?.update()
   }
 
+  const zoomToAll = () => {
+    const half = dataspaceHalfAxisKm()
+    applyOrbit(new THREE.Vector3(half * 1.35, half * 0.55, half * 1.25))
+  }
+
+  const faceBlackSun = () => {
+    const half = dataspaceHalfAxisKm()
+    // Put the camera on +Z looking toward the origin so -Z is visually "forward".
+    applyOrbit(new THREE.Vector3(0, half * 0.55, half * 1.35))
+  }
+
   const zoomToSelected = () => {
     if (!selectedPos) return
-    const d = 12_000
-    camera.position.set(selectedPos.x + d, selectedPos.y + d * 0.55, selectedPos.z + d)
-    camera.lookAt(selectedPos)
-    controlsRef.current?.target.copy(selectedPos)
-    controlsRef.current?.update()
+
+    // Keep orbit center at Earth, but move camera along the ray through the selected point.
+    const r = selectedPos.length()
+    const dir = r > 0 ? selectedPos.clone().multiplyScalar(1 / r) : new THREE.Vector3(1, 0.55, 1).normalize()
+    const camPos = dir.multiplyScalar(r + 12_000)
+    applyOrbit(camPos)
   }
 
   const zoomToMarker = () => {
     if (!markerPosition) return
-    const d = 35_000
-    camera.position.set(markerPosition.x + d, markerPosition.y + d * 0.55, markerPosition.z + d)
-    camera.lookAt(markerPosition)
-    controlsRef.current?.target.copy(markerPosition)
-    controlsRef.current?.update()
+
+    const r = markerPosition.length()
+    const dir = r > 0 ? markerPosition.clone().multiplyScalar(1 / r) : new THREE.Vector3(1, 0.55, 1).normalize()
+    const camPos = dir.multiplyScalar(r + 35_000)
+    applyOrbit(camPos)
   }
 
   useEffect(() => {
@@ -608,6 +623,12 @@ function CameraController({
     zoomToMarker()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [zoomMarkerSeq])
+
+  useEffect(() => {
+    if (!faceBlackSunSeq) return
+    faceBlackSun()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [faceBlackSunSeq])
 
   return <OrbitControls ref={controlsRef} enableDamping dampingFactor={0.08} />
 }
@@ -661,6 +682,7 @@ export default function CyberspaceScene(props: Props): React.JSX.Element {
         zoomSelectedSeq={props.zoomSelectedSeq}
         markerPosition={markerPos}
         zoomMarkerSeq={props.zoomMarkerSeq}
+        faceBlackSunSeq={props.faceBlackSunSeq}
       />
     </Canvas>
   )

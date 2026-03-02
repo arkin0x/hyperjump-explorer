@@ -14,7 +14,7 @@ function fmt(n: number | null): string {
   return n === null ? '—' : String(n)
 }
 
-const BLOCK_SPAN_OPTIONS = [5, 10, 100, 1_000, 10_000, 100_000, 1_000_000] as const
+const BLOCK_SPAN_OPTIONS = [5, 10, 21, 50, 100, 1_000, 10_000, 100_000, 1_000_000] as const
 export type BlockSpan = (typeof BLOCK_SPAN_OPTIONS)[number]
 
 function sampleCountForSpan(span: BlockSpan): number {
@@ -82,6 +82,7 @@ export default function CyberspaceExplorer(): React.JSX.Element {
   const [zoomAllSeq, setZoomAllSeq] = useState(0)
   const [zoomSelectedSeq, setZoomSelectedSeq] = useState(0)
   const [zoomMarkerSeq, setZoomMarkerSeq] = useState(0)
+  const [faceBlackSunSeq, setFaceBlackSunSeq] = useState(0)
 
   const [panelCollapsed, setPanelCollapsed] = useState(false)
   const [showLines, setShowLines] = useState(true)
@@ -460,6 +461,7 @@ export default function CyberspaceExplorer(): React.JSX.Element {
           zoomAllSeq={zoomAllSeq}
           zoomSelectedSeq={zoomSelectedSeq}
           zoomMarkerSeq={zoomMarkerSeq}
+          faceBlackSunSeq={faceBlackSunSeq}
           showLines={showLines}
           mainChainHeights={baseDisplayHeights}
           favoriteHeights={favorites}
@@ -563,6 +565,15 @@ export default function CyberspaceExplorer(): React.JSX.Element {
                   className="rounded-lg bg-white/10 px-3 py-1.5 hover:bg-white/15"
                 >
                   Zoom to all
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setFaceBlackSunSeq((x) => x + 1)}
+                  className="rounded-lg bg-white/10 px-3 py-1.5 hover:bg-white/15"
+                  title="Canonical orientation: look toward the black sun (-Z)"
+                >
+                  Face black sun
                 </button>
 
                 <button
