@@ -18,8 +18,11 @@ type Props = {
   selectedHeight: number | null
   zoomAllSeq: number
   zoomSelectedSeq: number
+  zoomMarkerSeq: number
   showLines: boolean
   favoriteHeights?: number[]
+  highlightHeights?: number[]
+  markerPosition?: { x: number; y: number; z: number } | null
   onSelectHeight?: (height: number) => void
 }
 
@@ -197,7 +200,7 @@ function PointsCloud({
   selectedHeight,
   onSelectHeight,
 }: {
-  pts: { height: number; pos: THREE.Vector3; color: THREE.Color; plane: 0 | 1; ageT: number; isFavorite: boolean }[]
+  pts: { height: number; pos: THREE.Vector3; color: THREE.Color; plane: 0 | 1; ageT: number; isFavorite: boolean; isHighlighted: boolean }[]
   fadeStartIdx: number
   fadeCount: number
   selectedHeight: number | null
@@ -209,6 +212,7 @@ function PointsCloud({
     const colors = new Float32Array(n * 3)
 
     const favPositions: number[] = []
+    const hlPositions: number[] = []
 
     let selectedPos: THREE.Vector3 | null = null
 
@@ -229,6 +233,9 @@ function PointsCloud({
       // Favorites should stand out even when not selected.
       if (p.isFavorite) f = Math.max(f, 0.85)
 
+      // Highlighted blocks (nearest to marker) should stand out.
+      if (p.isHighlighted) f = Math.max(f, 0.9)
+
       const j = i * 3
       positions[j + 0] = p.pos.x
       positions[j + 1] = p.pos.y
@@ -242,10 +249,20 @@ function PointsCloud({
         favPositions.push(p.pos.x, p.pos.y, p.pos.z)
       }
 
+      if (p.isHighlighted) {
+        hlPositions.push(p.pos.x, p.pos.y, p.pos.z)
+      }
+
       if (selectedHeight !== null && p.height === selectedHeight) selectedPos = p.pos
     }
 
-    return { positions, colors, selectedPos, favPositions: new Float32Array(favPositions) }
+    return {
+      positions,
+      colors,
+      selectedPos,
+      favPositions: new Float32Array(favPositions),
+      hlPositions: new Float32Array(hlPositions),
+    }
   }, [fadeCount, fadeStartIdx, pts, selectedHeight])
 
   return (
@@ -276,6 +293,15 @@ function PointsCloud({
         </points>
       )}
 
+      {data.hlPositions.length > 0 && (
+        <points>
+          <bufferGeometry>
+            <bufferAttribute attach="attributes-position" args={[data.hlPositions, 3]} />
+          </bufferGeometry>
+          <pointsMaterial size={1200} sizeAttenuation color={0xff3b3b} transparent opacity={0.85} />
+        </points>
+      )}
+
       {data.selectedPos && (
         <mesh position={[data.selectedPos.x, data.selectedPos.y, data.selectedPos.z]}>
           <boxGeometry args={[1200, 1200, 1200]} />
@@ -291,12 +317,14 @@ function BlocksAndLines({
   selectedHeight,
   showLines,
   favoriteSet,
+  highlightSet,
   onSelectHeight,
 }: {
   blocks: BlockPoint[]
   selectedHeight: number | null
   showLines: boolean
   favoriteSet: Set<number>
+  highlightSet: Set<number>
   onSelectHeight?: (height: number) => void
 }): React.JSX.Element {
   const fadeCount = 3
@@ -316,9 +344,10 @@ function BlocksAndLines({
         pos: new THREE.Vector3(b.position.x, b.position.y, b.position.z),
         color: ageToRainbowColor(ageT),
         isFavorite: favoriteSet.has(b.height),
+        isHighlighted: highlightSet.has(b.height),
       }
     })
-  }, [blocks, favoriteSet])
+  }, [blocks, favoriteSet, highlightSet])
 
   const n = pts.length
   const fadeStartIdx = Math.max(0, n - fadeCount)
@@ -431,6 +460,7 @@ function BlocksAndLines({
         pts.map((p, i) => {
           const isSelected = selectedHeight !== null && p.height === selectedHeight
           const isFavorite = p.isFavorite
+          const isHighlighted = p.isHighlighted
 
           let ageOpacity = 1.0
           if (n <= fadeCount) {
@@ -446,7 +476,10 @@ function BlocksAndLines({
           // Favorites should be visually present even when old/faded.
           if (isFavorite && !isSelected) opacity = Math.max(opacity, 0.75)
 
-          const size = isSelected ? 820 : isFavorite ? 680 : 540
+          // Highlighted blocks (nearest to marker) should be visible.
+          if (isHighlighted && !isSelected) opacity = Math.max(opacity, 0.8)
+
+          const size = isSelected ? 820 : isHighlighted ? 720 : isFavorite ? 680 : 540
 
           return (
             <mesh
@@ -462,8 +495,8 @@ function BlocksAndLines({
                 color={p.color}
                 transparent
                 opacity={opacity}
-                emissive={isFavorite ? 0xffd54d : p.color}
-                emissiveIntensity={isSelected ? 0.8 : isFavorite ? 0.35 : 0}
+                emissive={isSelected ? 0xffffff : isHighlighted ? 0xff3b3b : isFavorite ? 0xffd54d : p.color}
+                emissiveIntensity={isSelected ? 0.85 : isHighlighted ? 0.45 : isFavorite ? 0.35 : 0}
               />
             </mesh>
           )
@@ -481,6 +514,8 @@ type CameraControllerProps = {
   selectedHeight: number | null
   zoomAllSeq: number
   zoomSelectedSeq: number
+  markerPosition: THREE.Vector3 | null
+  zoomMarkerSeq: number
 }
 
 function CameraController({
@@ -488,6 +523,8 @@ function CameraController({
   selectedHeight,
   zoomAllSeq,
   zoomSelectedSeq,
+  markerPosition,
+  zoomMarkerSeq,
 }: CameraControllerProps): React.JSX.Element {
   const controlsRef = useRef<React.ElementRef<typeof OrbitControls> | null>(null)
   const { camera } = useThree()
@@ -516,6 +553,15 @@ function CameraController({
     controlsRef.current?.update()
   }
 
+  const zoomToMarker = () => {
+    if (!markerPosition) return
+    const d = 35_000
+    camera.position.set(markerPosition.x + d, markerPosition.y + d * 0.55, markerPosition.z + d)
+    camera.lookAt(markerPosition)
+    controlsRef.current?.target.copy(markerPosition)
+    controlsRef.current?.update()
+  }
+
   useEffect(() => {
     zoomToAll()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -531,12 +577,23 @@ function CameraController({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [zoomSelectedSeq])
 
+  useEffect(() => {
+    zoomToMarker()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [zoomMarkerSeq])
+
   return <OrbitControls ref={controlsRef} enableDamping dampingFactor={0.08} />
 }
 
 export default function CyberspaceScene(props: Props): React.JSX.Element {
   const blocks = useMemo(() => props.blocks.map((b) => ({ ...b, position: csToThree(b.position) })), [props.blocks])
   const favoriteSet = useMemo(() => new Set(props.favoriteHeights ?? []), [props.favoriteHeights])
+  const highlightSet = useMemo(() => new Set(props.highlightHeights ?? []), [props.highlightHeights])
+
+  const markerPos = useMemo(() => {
+    if (!props.markerPosition) return null
+    return new THREE.Vector3(props.markerPosition.x, props.markerPosition.y, props.markerPosition.z)
+  }, [props.markerPosition])
 
   return (
     <Canvas
@@ -551,11 +608,20 @@ export default function CyberspaceScene(props: Props): React.JSX.Element {
       <Bounds />
       <Earth />
       <BlackSun />
+
+      {markerPos && (
+        <mesh position={[markerPos.x, markerPos.y, markerPos.z]}>
+          <sphereGeometry args={[260, 18, 14]} />
+          <meshStandardMaterial color={0xff2d2d} emissive={0xff2d2d} emissiveIntensity={0.35} />
+        </mesh>
+      )}
+
       <BlocksAndLines
         blocks={blocks}
         selectedHeight={props.selectedHeight}
         showLines={props.showLines}
         favoriteSet={favoriteSet}
+        highlightSet={highlightSet}
         onSelectHeight={props.onSelectHeight}
       />
 
@@ -564,6 +630,8 @@ export default function CyberspaceScene(props: Props): React.JSX.Element {
         selectedHeight={props.selectedHeight}
         zoomAllSeq={props.zoomAllSeq}
         zoomSelectedSeq={props.zoomSelectedSeq}
+        markerPosition={markerPos}
+        zoomMarkerSeq={props.zoomMarkerSeq}
       />
     </Canvas>
   )

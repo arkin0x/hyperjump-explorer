@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 
 import CyberspaceScene, { type BlockPoint } from '@/components/scene/CyberspaceScene'
 import { coordHexToCoord256, coordHexToPositionKm, coordToXyz, planeName, xyzToSector } from '@/lib/cyberspace/coords'
+import type { PositionKm } from '@/lib/cyberspace/coords'
 import { parseHyperjumpAnchor, type HyperjumpAnchor, type NostrEvent } from '@/lib/hyperjumps/anchor'
 import { kind321ByHeightFilter, kind321LatestFilter, NostrRelay, type NostrFilter } from '@/lib/nostr/relay'
 
@@ -13,7 +14,7 @@ function fmt(n: number | null): string {
   return n === null ? '—' : String(n)
 }
 
-const BLOCK_SPAN_OPTIONS = [100, 1_000, 10_000, 100_000, 1_000_000] as const
+const BLOCK_SPAN_OPTIONS = [5, 10, 100, 1_000, 10_000, 100_000, 1_000_000] as const
 export type BlockSpan = (typeof BLOCK_SPAN_OPTIONS)[number]
 
 function sampleCountForSpan(span: BlockSpan): number {
@@ -80,6 +81,7 @@ export default function CyberspaceExplorer(): React.JSX.Element {
 
   const [zoomAllSeq, setZoomAllSeq] = useState(0)
   const [zoomSelectedSeq, setZoomSelectedSeq] = useState(0)
+  const [zoomMarkerSeq, setZoomMarkerSeq] = useState(0)
 
   const [panelCollapsed, setPanelCollapsed] = useState(false)
   const [showLines, setShowLines] = useState(true)
@@ -91,6 +93,12 @@ export default function CyberspaceExplorer(): React.JSX.Element {
 
   const [favorites, setFavorites] = useState<number[]>([])
   const [showFavorites, setShowFavorites] = useState<boolean>(true)
+
+  const [coordInput, setCoordInput] = useState<string>('')
+  const [coordError, setCoordError] = useState<string>('')
+  const [markerPos, setMarkerPos] = useState<PositionKm | null>(null)
+  const [nearestHeights, setNearestHeights] = useState<number[]>([])
+  const anchorPosCacheRef = useRef<Map<number, PositionKm>>(new Map())
 
   useEffect(() => {
     try {
@@ -156,8 +164,10 @@ export default function CyberspaceExplorer(): React.JSX.Element {
       for (const h of favorites) out.add(h)
     }
 
+    for (const h of nearestHeights) out.add(h)
+
     return Array.from(out).sort((a, b) => b - a)
-  }, [baseDisplayHeights, favorites, latestSeenHeight, selectedHeight, showFavorites])
+  }, [baseDisplayHeights, favorites, latestSeenHeight, nearestHeights, selectedHeight, showFavorites])
 
   const selectedAnchor = useMemo(() => {
     if (selectedHeight === null) return null
@@ -374,6 +384,68 @@ export default function CyberspaceExplorer(): React.JSX.Element {
     if (latestSeenHeightRef.current === null) return
     setNewMode(true)
     setSelectedHeight(latestSeenHeightRef.current)
+    // Leave marker state as-is; users may want it to stay while following new blocks.
+  }
+
+  const clearMarker = () => {
+    setCoordError('')
+    setMarkerPos(null)
+    setNearestHeights([])
+  }
+
+  const locateCoord = () => {
+    setCoordError('')
+
+    const raw = coordInput.trim()
+    const raw2 = raw.startsWith('0x') || raw.startsWith('0X') ? raw.slice(2) : raw
+    const m = raw2.match(/([0-9a-fA-F]{64})/)
+    const hex = m ? m[1].toLowerCase() : ''
+    if (!hex) {
+      setCoordError('Expected a 32-byte hex coord (64 hex chars), optionally prefixed with 0x.')
+      return
+    }
+
+    let pos: PositionKm
+    try {
+      pos = coordHexToPositionKm(hex)
+    } catch (e) {
+      setCoordError(e instanceof Error ? e.message : String(e))
+      return
+    }
+
+    setMarkerPos(pos)
+    setZoomMarkerSeq((x) => x + 1)
+
+    // Find 5 nearest blocks among currently loaded anchors (any plane).
+    const best: { h: number; d2: number }[] = []
+
+    const pushBest = (h: number, d2: number) => {
+      best.push({ h, d2 })
+      best.sort((a, b) => a.d2 - b.d2)
+      if (best.length > 5) best.pop()
+    }
+
+    for (const [h, a] of anchorsByHeightRef.current.entries()) {
+      let ap = anchorPosCacheRef.current.get(h)
+      if (!ap) {
+        try {
+          ap = coordHexToPositionKm(a.coordHex)
+          anchorPosCacheRef.current.set(h, ap)
+        } catch {
+          continue
+        }
+      }
+
+      const dx = ap.xKm - pos.xKm
+      const dy = ap.yKm - pos.yKm
+      const dz = ap.zKm - pos.zKm
+      const d2 = dx * dx + dy * dy + dz * dz
+
+      if (best.length < 5) pushBest(h, d2)
+      else if (d2 < best[best.length - 1].d2) pushBest(h, d2)
+    }
+
+    setNearestHeights(best.map((x) => x.h))
   }
 
   const selectedIndex = selectedHeight === null ? -1 : baseDisplayHeights.indexOf(selectedHeight)
@@ -387,8 +459,11 @@ export default function CyberspaceExplorer(): React.JSX.Element {
           selectedHeight={selectedHeight}
           zoomAllSeq={zoomAllSeq}
           zoomSelectedSeq={zoomSelectedSeq}
+          zoomMarkerSeq={zoomMarkerSeq}
           showLines={showLines}
           favoriteHeights={favorites}
+          markerPosition={markerPos ? { x: markerPos.xKm, y: markerPos.yKm, z: markerPos.zKm } : null}
+          highlightHeights={nearestHeights}
           onSelectHeight={(h) => selectHeightUser(h)}
         />
       </div>
@@ -427,17 +502,17 @@ export default function CyberspaceExplorer(): React.JSX.Element {
               )}
             </div>
 
-            <button
-              type="button"
-              onClick={jumpToLatest}
-              className={
-                'rounded-full px-3 py-1 text-xs font-semibold ' +
-                (newMode ? 'bg-emerald-500/20 text-emerald-200' : 'bg-zinc-500/20 text-zinc-200')
-              }
-              title="Enable NEW mode and jump to latest-seen height"
-            >
-              NEW {newMode ? 'ON' : 'OFF'}
-            </button>
+              <button
+                type="button"
+                onClick={jumpToLatest}
+                className={
+                  'cursor-pointer rounded-full px-3 py-1 text-xs font-semibold hover:bg-white/10 ' +
+                  (newMode ? 'bg-emerald-500/20 text-emerald-200' : 'bg-zinc-500/20 text-zinc-200')
+                }
+                title="Enable NEW mode and jump to latest-seen height"
+              >
+                NEW {newMode ? 'ON' : 'OFF'}
+              </button>
           </div>
 
           {!panelCollapsed && (
@@ -575,10 +650,76 @@ export default function CyberspaceExplorer(): React.JSX.Element {
                 />
                 <button
                   type="submit"
-                  className="rounded-lg bg-emerald-500/20 px-3 py-2 text-sm font-semibold text-emerald-200"
+                  className="rounded-lg bg-emerald-500/20 px-3 py-2 text-sm font-semibold text-emerald-200 hover:bg-emerald-500/25"
                 >
                   Jump
                 </button>
+              </form>
+
+              <form
+                className="mt-3 rounded-lg bg-white/5 p-3"
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  locateCoord()
+                }}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-xs font-semibold text-zinc-200">Locate coordinate</div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={clearMarker}
+                      className="rounded-lg bg-white/10 px-2 py-1 text-xs hover:bg-white/15"
+                      disabled={!markerPos && nearestHeights.length === 0 && !coordError}
+                    >
+                      Clear
+                    </button>
+                    <button
+                      type="submit"
+                      className="rounded-lg bg-rose-500/20 px-2 py-1 text-xs font-semibold text-rose-200 hover:bg-rose-500/25"
+                    >
+                      Drop marker
+                    </button>
+                  </div>
+                </div>
+
+                <textarea
+                  value={coordInput}
+                  onChange={(e) => setCoordInput(e.target.value)}
+                  placeholder="Paste coord256 hex (32 bytes / 64 hex chars)"
+                  rows={2}
+                  spellCheck={false}
+                  className="mt-2 w-full resize-none rounded-lg bg-black/30 px-3 py-2 font-mono text-xs outline-none ring-1 ring-white/10 focus:ring-2 focus:ring-rose-500/40"
+                />
+
+                {coordError ? <div className="mt-2 text-xs text-rose-300">{coordError}</div> : null}
+
+                {markerPos ? (
+                  <div className="mt-2 text-xs text-zinc-300">
+                    Marker plane={markerPos.plane} ({planeName(markerPos.plane)})
+                  </div>
+                ) : null}
+
+                {nearestHeights.length > 0 ? (
+                  <div className="mt-2 text-xs text-zinc-300">
+                    Nearest blocks:{' '}
+                    <span className="font-mono">
+                      {nearestHeights
+                        .slice()
+                        .sort((a, b) => b - a)
+                        .map((h) => (
+                          <button
+                            key={h}
+                            type="button"
+                            onClick={() => selectHeightUser(h)}
+                            className="ml-2 rounded bg-white/10 px-1.5 py-0.5 hover:bg-white/15"
+                          >
+                            {h}
+                          </button>
+                        ))}
+                    </span>
+                  </div>
+                ) : null}
               </form>
 
               <div className="mt-3 rounded-lg bg-white/5 p-3">
