@@ -19,7 +19,6 @@ export type HyperjumpAnchor = {
   prevBlockHash?: string
   nextBlockHash?: string
   net?: string
-  raw: NostrEvent
 }
 
 function getTag(tags: string[][], key: string): string | undefined {
@@ -53,6 +52,5 @@ export function parseHyperjumpAnchor(ev: NostrEvent): HyperjumpAnchor | null {
     prevBlockHash: getTag(ev.tags, 'P')?.toLowerCase(),
     nextBlockHash: getTag(ev.tags, 'N')?.toLowerCase(),
     net: getTag(ev.tags, 'net'),
-    raw: ev,
   }
 }

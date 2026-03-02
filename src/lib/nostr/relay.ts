@@ -155,6 +155,33 @@ export class NostrRelay {
       const t = setTimeout(() => finish(null), timeoutMs)
     })
   }
+
+  async fetchMany(filter: NostrFilter, timeoutMs: number = 15_000): Promise<NostrEvent[]> {
+    await this.connect()
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) throw new Error('relay websocket not open')
+
+    return await new Promise<NostrEvent[]>((resolve) => {
+      let done = false
+      let sid: string | null = null
+      const events: NostrEvent[] = []
+
+      const finish = () => {
+        if (done) return
+        done = true
+        clearTimeout(t)
+        if (sid) this.closeSub(sid)
+        resolve(events)
+      }
+
+      sid = this.subscribe(filter, {
+        onEvent: (ev) => events.push(ev),
+        onEose: () => finish(),
+        onClose: () => finish(),
+      })
+
+      const t = setTimeout(() => finish(), timeoutMs)
+    })
+  }
 }
 
 export function kind321LatestFilter(limit: number = 100): NostrFilter {

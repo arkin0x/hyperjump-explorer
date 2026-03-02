@@ -5,12 +5,60 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import CyberspaceScene, { type BlockPoint } from '@/components/scene/CyberspaceScene'
 import { coordHexToCoord256, coordHexToPositionKm, coordToXyz, planeName, xyzToSector } from '@/lib/cyberspace/coords'
 import { parseHyperjumpAnchor, type HyperjumpAnchor, type NostrEvent } from '@/lib/hyperjumps/anchor'
-import { kind321ByHeightFilter, kind321LatestFilter, NostrRelay } from '@/lib/nostr/relay'
+import { kind321ByHeightFilter, kind321LatestFilter, NostrRelay, type NostrFilter } from '@/lib/nostr/relay'
 
 const DEFAULT_RELAY_URL = process.env.NEXT_PUBLIC_NOSTR_RELAY_URL ?? 'wss://cyberspace.nostr1.com'
 
 function fmt(n: number | null): string {
   return n === null ? '—' : String(n)
+}
+
+const BLOCK_SPAN_OPTIONS = [100, 1_000, 10_000, 100_000, 1_000_000] as const
+export type BlockSpan = (typeof BLOCK_SPAN_OPTIONS)[number]
+
+function sampleCountForSpan(span: BlockSpan): number {
+  // Reasonable caps to keep fetch + render bounded while still giving much more context.
+  if (span <= 10_000) return span
+  if (span === 100_000) return 10_000
+  return 20_000 // 1,000,000
+}
+
+function computeDisplayHeights(latestHeight: number, span: BlockSpan): number[] {
+  const earliest = Math.max(0, latestHeight - span + 1)
+  const count = sampleCountForSpan(span)
+
+  // Linear for small spans, log-sampled for large spans.
+  const heights = new Set<number>()
+  heights.add(latestHeight)
+  heights.add(earliest)
+
+  if (span <= 10_000) {
+    for (let h = latestHeight; h >= earliest && heights.size < count; h--) heights.add(h)
+  } else {
+    // Offsets in [0..span-1], log-distributed: denser near 0 (newest), sparser toward oldest.
+    const maxOffset = latestHeight - earliest
+    const denom = Math.max(1, count - 1)
+
+    for (let i = 0; i < count; i++) {
+      const t = i / denom
+      const offset = Math.floor(Math.exp(t * Math.log(maxOffset + 1)) - 1)
+      heights.add(latestHeight - offset)
+    }
+  }
+
+  return Array.from(heights)
+    .filter((h) => h >= earliest && h <= latestHeight)
+    .sort((a, b) => b - a)
+}
+
+function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
+  return out
+}
+
+function kind321ByHeightsFilter(heights: number[]): NostrFilter {
+  return { kinds: [321], '#B': heights.map(String), limit: heights.length }
 }
 
 export default function CyberspaceExplorer(): React.JSX.Element {
@@ -23,6 +71,7 @@ export default function CyberspaceExplorer(): React.JSX.Element {
 
   const [status, setStatus] = useState<string>('disconnected')
   const [anchorsByHeight, setAnchorsByHeight] = useState<Map<number, HyperjumpAnchor>>(() => new Map())
+  const anchorsByHeightRef = useRef<Map<number, HyperjumpAnchor>>(anchorsByHeight)
   const [latestSeenHeight, setLatestSeenHeight] = useState<number | null>(null)
   const [selectedHeight, setSelectedHeight] = useState<number | null>(null)
   const [newMode, setNewMode] = useState<boolean>(true)
@@ -33,10 +82,47 @@ export default function CyberspaceExplorer(): React.JSX.Element {
   const [zoomSelectedSeq, setZoomSelectedSeq] = useState(0)
 
   const [panelCollapsed, setPanelCollapsed] = useState(false)
+  const [showLines, setShowLines] = useState(true)
+
+  const [detailsCollapsed, setDetailsCollapsed] = useState(true)
+
+  const [blockSpan, setBlockSpan] = useState<BlockSpan>(100)
+  const [prefetchStatus, setPrefetchStatus] = useState<string>('')
+
+  const [favorites, setFavorites] = useState<number[]>([])
+  const [showFavorites, setShowFavorites] = useState<boolean>(true)
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('hyperjump_favorites_v1')
+      if (!raw) return
+      const parsed = JSON.parse(raw)
+      if (!Array.isArray(parsed)) return
+      const hs = parsed
+        .map((x) => (typeof x === 'number' ? x : Number.parseInt(String(x), 10)))
+        .filter((x) => Number.isFinite(x) && x >= 0)
+      const uniq = Array.from(new Set(hs)).sort((a, b) => b - a)
+      setFavorites(uniq)
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('hyperjump_favorites_v1', JSON.stringify(favorites))
+    } catch {
+      // ignore
+    }
+  }, [favorites])
 
   useEffect(() => {
     latestSeenHeightRef.current = latestSeenHeight
   }, [latestSeenHeight])
+
+  useEffect(() => {
+    anchorsByHeightRef.current = anchorsByHeight
+  }, [anchorsByHeight])
 
   useEffect(() => {
     selectedHeightRef.current = selectedHeight
@@ -46,10 +132,32 @@ export default function CyberspaceExplorer(): React.JSX.Element {
     newModeRef.current = newMode
   }, [newMode])
 
-  const recentHeights = useMemo(() => {
-    const hs = Array.from(anchorsByHeight.keys()).sort((a, b) => b - a)
-    return hs.slice(0, 100)
-  }, [anchorsByHeight])
+  const baseDisplayHeights = useMemo(() => {
+    if (latestSeenHeight === null) return []
+    return computeDisplayHeights(latestSeenHeight, blockSpan)
+  }, [latestSeenHeight, blockSpan])
+
+  const sceneHeights = useMemo(() => {
+    const out = new Set<number>(baseDisplayHeights)
+
+    if (selectedHeight !== null) {
+      out.add(selectedHeight)
+
+      const prev = selectedHeight - 1
+      const next = selectedHeight + 1
+
+      if (prev >= 0) out.add(prev)
+
+      // Avoid "future" height placeholders (prevents confusing context-line behavior at the tip).
+      if (latestSeenHeight !== null && next <= latestSeenHeight) out.add(next)
+    }
+
+    if (showFavorites) {
+      for (const h of favorites) out.add(h)
+    }
+
+    return Array.from(out).sort((a, b) => b - a)
+  }, [baseDisplayHeights, favorites, latestSeenHeight, selectedHeight, showFavorites])
 
   const selectedAnchor = useMemo(() => {
     if (selectedHeight === null) return null
@@ -84,17 +192,17 @@ export default function CyberspaceExplorer(): React.JSX.Element {
       }
     }
 
-    for (const h of recentHeights) {
+    for (const h of sceneHeights) {
       const a = anchorsByHeight.get(h)
       if (a) pushAnchor(a)
     }
 
-    if (selectedAnchor && !recentHeights.includes(selectedAnchor.height)) {
+    if (selectedAnchor && !sceneHeights.includes(selectedAnchor.height)) {
       pushAnchor(selectedAnchor)
     }
 
     return blocks
-  }, [anchorsByHeight, recentHeights, selectedAnchor])
+  }, [anchorsByHeight, sceneHeights, selectedAnchor])
 
   // Connect + subscribe to latest kind=321 events (limit 100)
   useEffect(() => {
@@ -205,13 +313,70 @@ export default function CyberspaceExplorer(): React.JSX.Element {
     setSelectedHeight(h)
   }
 
+  // Prefetch the display set so the scene fills in quickly when using large spans.
+  const prefetchSeq = useRef(0)
+  useEffect(() => {
+    const relay = relayRef.current
+    if (!relay) return
+    if (latestSeenHeight === null) return
+
+    const seq = ++prefetchSeq.current
+    const heights = sceneHeights
+
+    ;(async () => {
+      const toFetch = heights.filter((h) => !anchorsByHeightRef.current.has(h))
+      if (toFetch.length === 0) {
+        setPrefetchStatus('')
+        return
+      }
+
+      setPrefetchStatus(`loading ${toFetch.length} heights…`)
+
+      let loaded = 0
+      for (const group of chunk(toFetch, 200)) {
+        if (prefetchSeq.current !== seq) return
+
+        try {
+          const evs = await relay.fetchMany(kind321ByHeightsFilter(group), 20_000)
+          if (prefetchSeq.current !== seq) return
+
+          const anchors: HyperjumpAnchor[] = []
+          for (const ev of evs) {
+            const a = parseHyperjumpAnchor(ev)
+            if (a) anchors.push(a)
+          }
+
+          if (anchors.length) {
+            setAnchorsByHeight((prev) => {
+              const next = new Map(prev)
+              for (const a of anchors) {
+                const existing = next.get(a.height)
+                if (!existing || a.createdAt >= existing.createdAt) next.set(a.height, a)
+              }
+              return next
+            })
+          }
+
+          loaded += group.length
+          setPrefetchStatus(`loading ${Math.max(0, toFetch.length - loaded)} heights…`)
+        } catch {
+          // keep going; individual relays may refuse large tag lists
+          loaded += group.length
+          setPrefetchStatus(`loading ${Math.max(0, toFetch.length - loaded)} heights…`)
+        }
+      }
+
+      if (prefetchSeq.current === seq) setPrefetchStatus('')
+    })()
+  }, [sceneHeights, latestSeenHeight])
+
   const jumpToLatest = () => {
     if (latestSeenHeightRef.current === null) return
     setNewMode(true)
     setSelectedHeight(latestSeenHeightRef.current)
   }
 
-  const selectedIndex = selectedHeight === null ? -1 : recentHeights.indexOf(selectedHeight)
+  const selectedIndex = selectedHeight === null ? -1 : baseDisplayHeights.indexOf(selectedHeight)
   const sliderValue = selectedIndex >= 0 ? selectedIndex : 0
 
   return (
@@ -222,6 +387,8 @@ export default function CyberspaceExplorer(): React.JSX.Element {
           selectedHeight={selectedHeight}
           zoomAllSeq={zoomAllSeq}
           zoomSelectedSeq={zoomSelectedSeq}
+          showLines={showLines}
+          favoriteHeights={favorites}
           onSelectHeight={(h) => selectHeightUser(h)}
         />
       </div>
@@ -321,27 +488,73 @@ export default function CyberspaceExplorer(): React.JSX.Element {
                 >
                   Zoom to all
                 </button>
+
+                <button
+                  type="button"
+                  onClick={() => setShowLines((v) => !v)}
+                  className="rounded-lg bg-white/10 px-3 py-1.5 hover:bg-white/15"
+                  title="Toggle connecting lines"
+                >
+                  Lines {showLines ? 'ON' : 'OFF'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setShowFavorites((v) => !v)}
+                  className="rounded-lg bg-white/10 px-3 py-1.5 hover:bg-white/15"
+                  title="Toggle rendering of favorited blocks"
+                >
+                  Favorites {showFavorites ? 'ON' : 'OFF'}
+                </button>
               </div>
 
               <div className="mt-3">
                 <div className="flex items-center justify-between">
-                  <div className="text-xs text-zinc-400">Recent window (top {recentHeights.length} / 100)</div>
+                  <div className="text-xs text-zinc-400">
+                    Showing {baseDisplayHeights.length.toLocaleString()} blocks (span {blockSpan.toLocaleString()}, sample{' '}
+                    {sampleCountForSpan(blockSpan).toLocaleString()})
+                    {showFavorites && favorites.length > 0 ? (
+                      <span className="ml-2 text-zinc-500">+ {favorites.length.toLocaleString()} favorites</span>
+                    ) : null}
+                  </div>
                   <div className="font-mono text-xs text-zinc-300">
-                    {recentHeights.length > 0 ? `${recentHeights[0]} → ${recentHeights[recentHeights.length - 1]}` : '—'}
+                    {baseDisplayHeights.length > 0
+                      ? `${baseDisplayHeights[0].toLocaleString()} → ${baseDisplayHeights[baseDisplayHeights.length - 1].toLocaleString()}`
+                      : '—'}
                   </div>
                 </div>
+
+                <div className="mt-2 flex items-center gap-2">
+                  <label className="text-xs text-zinc-400">Blocks</label>
+                  <select
+                    value={blockSpan}
+                    onChange={(e) => {
+                      const v = Number.parseInt(e.target.value, 10) as BlockSpan
+                      if (BLOCK_SPAN_OPTIONS.includes(v)) setBlockSpan(v)
+                    }}
+                    className="rounded-lg bg-black/30 px-2 py-1 text-xs ring-1 ring-white/10"
+                  >
+                    {BLOCK_SPAN_OPTIONS.map((v) => (
+                      <option key={v} value={v}>
+                        {v.toLocaleString()}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="text-xs text-zinc-500">{prefetchStatus}</div>
+                </div>
+
                 <input
                   type="range"
                   min={0}
-                  max={Math.max(0, recentHeights.length - 1)}
+                  max={Math.max(0, baseDisplayHeights.length - 1)}
                   value={sliderValue}
                   onChange={(e) => {
                     const idx = Number.parseInt(e.target.value, 10)
-                    const h = recentHeights[idx]
+                    const h = baseDisplayHeights[idx]
                     if (Number.isFinite(h)) selectHeightUser(h)
                   }}
                   className="mt-1 w-full"
-                  disabled={recentHeights.length === 0}
+                  disabled={baseDisplayHeights.length === 0}
                 />
               </div>
 
@@ -369,44 +582,82 @@ export default function CyberspaceExplorer(): React.JSX.Element {
               </form>
 
               <div className="mt-3 rounded-lg bg-white/5 p-3">
-                <div className="text-xs font-semibold text-zinc-200">Selected block details</div>
-                {!selectedAnchor ? (
-                  <div className="mt-1 text-xs text-zinc-400">No block selected yet.</div>
-                ) : (
-                  <div className="mt-2 grid grid-cols-1 gap-2">
-                    <div>
-                      <div className="text-xs text-zinc-400">Anchor event id</div>
-                      <div className="break-all font-mono text-xs">{selectedAnchor.eventId}</div>
-                    </div>
-                    <div>
-                      <div className="text-xs text-zinc-400">Coord (C tag, Merkle root)</div>
-                      <div className="break-all font-mono text-xs">{selectedAnchor.coordHex}</div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <div className="text-xs text-zinc-400">Plane</div>
-                        <div className="font-mono text-xs">{selectedDecoded ? `${selectedDecoded.plane} (${planeName(selectedDecoded.plane)})` : '—'}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-zinc-400">Sector (S)</div>
-                        <div className="font-mono text-xs">{selectedDecoded ? selectedDecoded.sector.s : '—'}</div>
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-1 gap-2">
-                      <div>
-                        <div className="text-xs text-zinc-400">Block hash (H)</div>
-                        <div className="break-all font-mono text-xs">{selectedAnchor.blockHash ?? '—'}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-zinc-400">Prev hash (P)</div>
-                        <div className="break-all font-mono text-xs">{selectedAnchor.prevBlockHash ?? '—'}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-zinc-400">Next hash (N)</div>
-                        <div className="break-all font-mono text-xs">{selectedAnchor.nextBlockHash ?? '—'}</div>
-                      </div>
-                    </div>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <div className="text-xs font-semibold text-zinc-200">Selected block details</div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (selectedHeight === null) return
+                        setFavorites((prev) => {
+                          const s = new Set(prev)
+                          if (s.has(selectedHeight)) s.delete(selectedHeight)
+                          else s.add(selectedHeight)
+                          return Array.from(s).sort((a, b) => b - a)
+                        })
+                      }}
+                      className={
+                        'rounded-lg bg-white/10 px-2 py-1 text-xs hover:bg-white/15 ' +
+                        (selectedHeight !== null && favorites.includes(selectedHeight) ? 'text-yellow-300' : 'text-zinc-200')
+                      }
+                      disabled={selectedHeight === null}
+                      title={selectedHeight !== null && favorites.includes(selectedHeight) ? 'Unfavorite' : 'Favorite'}
+                    >
+                      {selectedHeight !== null && favorites.includes(selectedHeight) ? '★' : '☆'}
+                    </button>
                   </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setDetailsCollapsed((v) => !v)}
+                    className="rounded-lg bg-white/10 px-2 py-1 text-xs hover:bg-white/15"
+                    title={detailsCollapsed ? 'Show details' : 'Hide details'}
+                  >
+                    {detailsCollapsed ? 'Show' : 'Hide'}
+                  </button>
+                </div>
+
+                {!detailsCollapsed && (
+                  <>
+                    {!selectedAnchor ? (
+                      <div className="mt-1 text-xs text-zinc-400">No block selected yet.</div>
+                    ) : (
+                      <div className="mt-2 grid grid-cols-1 gap-2">
+                        <div>
+                          <div className="text-xs text-zinc-400">Anchor event id</div>
+                          <div className="break-all font-mono text-xs">{selectedAnchor.eventId}</div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-zinc-400">Coord (C tag, Merkle root)</div>
+                          <div className="break-all font-mono text-xs">{selectedAnchor.coordHex}</div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <div className="text-xs text-zinc-400">Plane</div>
+                            <div className="font-mono text-xs">{selectedDecoded ? `${selectedDecoded.plane} (${planeName(selectedDecoded.plane)})` : '—'}</div>
+                          </div>
+                          <div>
+                            <div className="text-xs text-zinc-400">Sector (S)</div>
+                            <div className="font-mono text-xs">{selectedDecoded ? selectedDecoded.sector.s : '—'}</div>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-1 gap-2">
+                          <div>
+                            <div className="text-xs text-zinc-400">Block hash (H)</div>
+                            <div className="break-all font-mono text-xs">{selectedAnchor.blockHash ?? '—'}</div>
+                          </div>
+                          <div>
+                            <div className="text-xs text-zinc-400">Prev hash (P)</div>
+                            <div className="break-all font-mono text-xs">{selectedAnchor.prevBlockHash ?? '—'}</div>
+                          </div>
+                          <div>
+                            <div className="text-xs text-zinc-400">Next hash (N)</div>
+                            <div className="break-all font-mono text-xs">{selectedAnchor.nextBlockHash ?? '—'}</div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
 

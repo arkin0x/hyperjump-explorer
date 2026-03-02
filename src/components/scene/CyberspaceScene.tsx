@@ -18,13 +18,14 @@ type Props = {
   selectedHeight: number | null
   zoomAllSeq: number
   zoomSelectedSeq: number
+  showLines: boolean
+  favoriteHeights?: number[]
   onSelectHeight?: (height: number) => void
 }
 
 const GRID_COLOR = 0xb000ff
 const EARTH_COLOR = 0x2e86ff
 const BLACK_SUN_COLOR = 0x5a2d82
-const BLOCK_GOLD_COLOR = 0xf6c65a
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n))
@@ -175,72 +176,163 @@ function Segment({
   )
 }
 
+function PathLine({ pts }: { pts: { pos: THREE.Vector3; color: THREE.Color }[] }): React.JSX.Element | null {
+  if (pts.length < 2) return null
+  return (
+    <Line
+      points={pts.map((p) => p.pos)}
+      vertexColors={pts.map((p) => p.color)}
+      transparent
+      opacity={1}
+      lineWidth={1}
+      depthWrite={false}
+    />
+  )
+}
+
+function PointsCloud({
+  pts,
+  fadeStartIdx,
+  fadeCount,
+  selectedHeight,
+  onSelectHeight,
+}: {
+  pts: { height: number; pos: THREE.Vector3; color: THREE.Color; plane: 0 | 1; ageT: number; isFavorite: boolean }[]
+  fadeStartIdx: number
+  fadeCount: number
+  selectedHeight: number | null
+  onSelectHeight?: (height: number) => void
+}): React.JSX.Element {
+  const data = useMemo(() => {
+    const n = pts.length
+    const positions = new Float32Array(n * 3)
+    const colors = new Float32Array(n * 3)
+
+    const favPositions: number[] = []
+
+    let selectedPos: THREE.Vector3 | null = null
+
+    for (let i = 0; i < n; i++) {
+      const p = pts[i]
+
+      let f = 1.0
+      if (n <= fadeCount) {
+        f = 0.9 * (1 - p.ageT) + 0.1
+      } else if (i >= fadeStartIdx) {
+        const t = (i - fadeStartIdx) / Math.max(1, fadeCount - 1)
+        f = lerp(1.0, 0.18, t)
+      }
+
+      // Keep ideaspace a touch dimmer.
+      f *= p.plane === 1 ? 0.75 : 1.0
+
+      // Favorites should stand out even when not selected.
+      if (p.isFavorite) f = Math.max(f, 0.85)
+
+      const j = i * 3
+      positions[j + 0] = p.pos.x
+      positions[j + 1] = p.pos.y
+      positions[j + 2] = p.pos.z
+
+      colors[j + 0] = p.color.r * f
+      colors[j + 1] = p.color.g * f
+      colors[j + 2] = p.color.b * f
+
+      if (p.isFavorite) {
+        favPositions.push(p.pos.x, p.pos.y, p.pos.z)
+      }
+
+      if (selectedHeight !== null && p.height === selectedHeight) selectedPos = p.pos
+    }
+
+    return { positions, colors, selectedPos, favPositions: new Float32Array(favPositions) }
+  }, [fadeCount, fadeStartIdx, pts, selectedHeight])
+
+  return (
+    <group>
+      <points
+        onPointerDown={(e) => {
+          e.stopPropagation()
+          const idx = (e as unknown as { index?: number }).index
+          if (idx === undefined || idx === null) return
+          const p = pts[idx]
+          if (!p) return
+          onSelectHeight?.(p.height)
+        }}
+      >
+        <bufferGeometry>
+          <bufferAttribute attach="attributes-position" args={[data.positions, 3]} />
+          <bufferAttribute attach="attributes-color" args={[data.colors, 3]} />
+        </bufferGeometry>
+        <pointsMaterial size={650} sizeAttenuation vertexColors />
+      </points>
+
+      {data.favPositions.length > 0 && (
+        <points>
+          <bufferGeometry>
+            <bufferAttribute attach="attributes-position" args={[data.favPositions, 3]} />
+          </bufferGeometry>
+          <pointsMaterial size={1050} sizeAttenuation color={0xffd54d} transparent opacity={0.9} />
+        </points>
+      )}
+
+      {data.selectedPos && (
+        <mesh position={[data.selectedPos.x, data.selectedPos.y, data.selectedPos.z]}>
+          <boxGeometry args={[1200, 1200, 1200]} />
+          <meshBasicMaterial color={0xffffff} wireframe transparent opacity={0.95} depthWrite={false} />
+        </mesh>
+      )}
+    </group>
+  )
+}
+
 function BlocksAndLines({
   blocks,
   selectedHeight,
+  showLines,
+  favoriteSet,
   onSelectHeight,
 }: {
   blocks: BlockPoint[]
   selectedHeight: number | null
+  showLines: boolean
+  favoriteSet: Set<number>
   onSelectHeight?: (height: number) => void
 }): React.JSX.Element {
+  const fadeCount = 3
+
   const pts = useMemo(() => {
     const byHeight = [...blocks].sort((a, b) => b.height - a.height)
-    const n = byHeight.length
+    const maxH = byHeight.length ? byHeight[0].height : 0
+    const minH = byHeight.length ? byHeight[byHeight.length - 1].height : 0
+    const range = Math.max(1, maxH - minH)
 
-    return byHeight.map((b, i) => {
-      const ageT = n <= 1 ? 0 : i / (n - 1) // 0=newest, 1=oldest
+    return byHeight.map((b) => {
+      // 0=newest, 1=oldest (based on absolute height range in the current viewport)
+      const ageT = clamp((maxH - b.height) / range, 0, 1)
       return {
         ...b,
         ageT,
         pos: new THREE.Vector3(b.position.x, b.position.y, b.position.z),
+        color: ageToRainbowColor(ageT),
+        isFavorite: favoriteSet.has(b.height),
       }
     })
-  }, [blocks])
+  }, [blocks, favoriteSet])
 
   const n = pts.length
+  const fadeStartIdx = Math.max(0, n - fadeCount)
+  const fadeStartSegIdx = Math.max(0, fadeStartIdx - 1)
+  const renderAsPoints = n >= 10_000
 
-  return (
-    <group>
-      {pts.map((p) => {
-        const isSelected = selectedHeight !== null && p.height === selectedHeight
+  const renderLines = () => {
+    if (!showLines || n < 2) return null
 
-        const baseOpacity = 0.9 * (1 - p.ageT) + 0.08
-        const planeOpacity = p.plane === 1 ? 0.75 : 1.0
-        const opacity = isSelected ? 1.0 : baseOpacity * planeOpacity
-
-        const size = isSelected ? 820 : 540
-        const color = isSelected ? 0xffffff : BLOCK_GOLD_COLOR
-
-        return (
-          <mesh
-            key={p.height}
-            position={[p.pos.x, p.pos.y, p.pos.z]}
-            onClick={(e) => {
-              e.stopPropagation()
-              onSelectHeight?.(p.height)
-            }}
-          >
-            <boxGeometry args={[size, size, size]} />
-            <meshStandardMaterial
-              color={color}
-              transparent
-              opacity={opacity}
-              emissive={isSelected ? BLOCK_GOLD_COLOR : 0x000000}
-              emissiveIntensity={isSelected ? 0.55 : 0}
-            />
-          </mesh>
-        )
-      })}
-
-      {pts.slice(0, -1).map((p, i) => {
+    if (n <= fadeCount) {
+      return pts.slice(0, -1).map((p, i) => {
         const next = pts[i + 1]
-
         const segAgeT = n <= 1 ? 0 : (i + 0.5) / (n - 1)
         const opacity = 0.85 * (1 - segAgeT) + 0.05
-
-        const cA = ageToRainbowColor(p.ageT)
-        const cB = ageToRainbowColor(next.ageT)
 
         return (
           <Segment
@@ -248,13 +340,147 @@ function BlocksAndLines({
             a={p.pos}
             b={next.pos}
             opacity={opacity}
-            colorA={cA}
-            colorB={cB}
+            colorA={p.color}
+            colorB={next.color}
           />
         )
-      })}
+      })
+    }
+
+    const main = pts.slice(0, fadeStartSegIdx + 1)
+    const tails: React.JSX.Element[] = []
+
+    for (let i = fadeStartSegIdx; i <= n - 2; i++) {
+      const p = pts[i]
+      const next = pts[i + 1]
+      const t = (i - fadeStartSegIdx) / Math.max(1, fadeCount - 1)
+      const opacity = lerp(1.0, 0.18, t)
+      tails.push(
+        <Segment
+          key={`${p.height}-${next.height}`}
+          a={p.pos}
+          b={next.pos}
+          opacity={opacity}
+          colorA={p.color}
+          colorB={next.color}
+        />,
+      )
+    }
+
+    return (
+      <group>
+        <PathLine pts={main} />
+        {tails}
+      </group>
+    )
+  }
+
+  const heightMap = useMemo(() => {
+    const m = new Map<number, (typeof pts)[number]>()
+    for (const p of pts) m.set(p.height, p)
+    return m
+  }, [pts])
+
+  const contextLines = () => {
+    if (showLines) return null
+    if (selectedHeight === null) return null
+
+    const cur = heightMap.get(selectedHeight)
+    if (!cur) return null
+
+    const prev = heightMap.get(selectedHeight - 1)
+    const next = heightMap.get(selectedHeight + 1)
+
+    return (
+      <group>
+        {prev && (
+          <Segment
+            key={`ctx-${prev.height}-${cur.height}`}
+            a={prev.pos}
+            b={cur.pos}
+            opacity={1}
+            colorA={prev.color}
+            colorB={cur.color}
+          />
+        )}
+        {next && (
+          <Segment
+            key={`ctx-${cur.height}-${next.height}`}
+            a={cur.pos}
+            b={next.pos}
+            opacity={1}
+            colorA={cur.color}
+            colorB={next.color}
+          />
+        )}
+      </group>
+    )
+  }
+
+  return (
+    <group>
+      {renderAsPoints ? (
+        <PointsCloud
+          pts={pts}
+          fadeStartIdx={fadeStartIdx}
+          fadeCount={fadeCount}
+          selectedHeight={selectedHeight}
+          onSelectHeight={onSelectHeight}
+        />
+      ) : (
+        pts.map((p, i) => {
+          const isSelected = selectedHeight !== null && p.height === selectedHeight
+          const isFavorite = p.isFavorite
+
+          let ageOpacity = 1.0
+          if (n <= fadeCount) {
+            ageOpacity = 0.9 * (1 - p.ageT) + 0.1
+          } else if (i >= fadeStartIdx) {
+            const t = (i - fadeStartIdx) / Math.max(1, fadeCount - 1)
+            ageOpacity = lerp(1.0, 0.18, t)
+          }
+
+          const planeOpacity = p.plane === 1 ? 0.75 : 1.0
+          let opacity = isSelected ? 1.0 : ageOpacity * planeOpacity
+
+          // Favorites should be visually present even when old/faded.
+          if (isFavorite && !isSelected) opacity = Math.max(opacity, 0.75)
+
+          const size = isSelected ? 820 : isFavorite ? 680 : 540
+
+          return (
+            <mesh
+              key={p.height}
+              position={[p.pos.x, p.pos.y, p.pos.z]}
+              onClick={(e) => {
+                e.stopPropagation()
+                onSelectHeight?.(p.height)
+              }}
+            >
+              <boxGeometry args={[size, size, size]} />
+              <meshStandardMaterial
+                color={p.color}
+                transparent
+                opacity={opacity}
+                emissive={isFavorite ? 0xffd54d : p.color}
+                emissiveIntensity={isSelected ? 0.8 : isFavorite ? 0.35 : 0}
+              />
+            </mesh>
+          )
+        })
+      )}
+
+      {renderLines()}
+      {contextLines()}
     </group>
   )
+}
+
+type CameraControllerProps = {
+  blocks: BlockPoint[]
+  selectedHeight: number | null
+  zoomAllSeq: number
+  zoomSelectedSeq: number
 }
 
 function CameraController({
@@ -262,7 +488,7 @@ function CameraController({
   selectedHeight,
   zoomAllSeq,
   zoomSelectedSeq,
-}: Props): React.JSX.Element {
+}: CameraControllerProps): React.JSX.Element {
   const controlsRef = useRef<React.ElementRef<typeof OrbitControls> | null>(null)
   const { camera } = useThree()
 
@@ -310,6 +536,7 @@ function CameraController({
 
 export default function CyberspaceScene(props: Props): React.JSX.Element {
   const blocks = useMemo(() => props.blocks.map((b) => ({ ...b, position: csToThree(b.position) })), [props.blocks])
+  const favoriteSet = useMemo(() => new Set(props.favoriteHeights ?? []), [props.favoriteHeights])
 
   return (
     <Canvas
@@ -324,7 +551,13 @@ export default function CyberspaceScene(props: Props): React.JSX.Element {
       <Bounds />
       <Earth />
       <BlackSun />
-      <BlocksAndLines blocks={blocks} selectedHeight={props.selectedHeight} onSelectHeight={props.onSelectHeight} />
+      <BlocksAndLines
+        blocks={blocks}
+        selectedHeight={props.selectedHeight}
+        showLines={props.showLines}
+        favoriteSet={favoriteSet}
+        onSelectHeight={props.onSelectHeight}
+      />
 
       <CameraController
         blocks={blocks}
