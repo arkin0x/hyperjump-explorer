@@ -100,7 +100,8 @@ function Ring({ radius, axis }: { radius: number; axis: 'x' | 'y' | 'z' }): Reac
 
 function Bounds(): React.JSX.Element {
   const half = dataspaceHalfAxisKm()
-  const gridLines = 16
+  // ONOSENDAI uses an 8x8 grid (8 squares per side => 9 grid lines).
+  const gridLines = 9
 
   const top = useMemo(() => buildGridPlane(+half, half, gridLines), [half])
   const bot = useMemo(() => buildGridPlane(-half, half, gridLines), [half])
