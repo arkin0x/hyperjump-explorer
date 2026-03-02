@@ -20,6 +20,10 @@ type Props = {
   zoomSelectedSeq: number
   zoomMarkerSeq: number
   showLines: boolean
+  // Heights that participate in the "main" chain (e.g. the most-recent window).
+  // This prevents accidentally drawing lines from that chain to unrelated blocks
+  // that are also rendered (selected block, favorites, nearest, etc.).
+  mainChainHeights?: number[]
   favoriteHeights?: number[]
   highlightHeights?: number[]
   markerPosition?: { x: number; y: number; z: number } | null
@@ -38,9 +42,10 @@ function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t
 }
 
-// Render convention: flip X to match existing Python/TS visualizers.
+// Render convention: match Cyberspace axes directly.
+// +Z points toward the black sun, +Y toward the top grid, and looking toward +Z, screen-right is +X.
 function csToThree(p: { x: number; y: number; z: number }): { x: number; y: number; z: number } {
-  return { x: -p.x, y: p.y, z: p.z }
+  return { x: p.x, y: p.y, z: p.z }
 }
 
 function buildGridPlane(y: number, half: number, n: number): THREE.BufferGeometry {
@@ -316,6 +321,7 @@ function BlocksAndLines({
   blocks,
   selectedHeight,
   showLines,
+  mainChainSet,
   favoriteSet,
   highlightSet,
   onSelectHeight,
@@ -323,6 +329,7 @@ function BlocksAndLines({
   blocks: BlockPoint[]
   selectedHeight: number | null
   showLines: boolean
+  mainChainSet: Set<number>
   favoriteSet: Set<number>
   highlightSet: Set<number>
   onSelectHeight?: (height: number) => void
@@ -351,47 +358,62 @@ function BlocksAndLines({
 
   const n = pts.length
   const fadeStartIdx = Math.max(0, n - fadeCount)
-  const fadeStartSegIdx = Math.max(0, fadeStartIdx - 1)
   const renderAsPoints = n >= 10_000
 
-  const renderLines = () => {
-    if (!showLines || n < 2) return null
+  const chainPts = useMemo(() => pts.filter((p) => mainChainSet.has(p.height)), [mainChainSet, pts])
 
-    if (n <= fadeCount) {
-      return pts.slice(0, -1).map((p, i) => {
-        const next = pts[i + 1]
-        const segAgeT = n <= 1 ? 0 : (i + 0.5) / (n - 1)
+  const renderLines = () => {
+    if (!showLines || chainPts.length < 2) return null
+
+    const cn = chainPts.length
+    const fadeStartIdx = Math.max(0, cn - fadeCount)
+    const fadeStartSegIdx = Math.max(0, fadeStartIdx - 1)
+
+    // Only draw segments between consecutive heights (prevents false connections).
+    const consecutiveSegments: Array<{ a: (typeof chainPts)[number]; b: (typeof chainPts)[number] }> = []
+    for (let i = 0; i < cn - 1; i++) {
+      const a = chainPts[i]
+      const b = chainPts[i + 1]
+      if (b.height === a.height - 1) consecutiveSegments.push({ a, b })
+    }
+
+    if (cn <= fadeCount) {
+      return consecutiveSegments.map((seg, i) => {
+        const segAgeT = cn <= 1 ? 0 : (i + 0.5) / Math.max(1, cn - 1)
         const opacity = 0.85 * (1 - segAgeT) + 0.05
 
         return (
           <Segment
-            key={`${p.height}-${next.height}`}
-            a={p.pos}
-            b={next.pos}
+            key={`${seg.a.height}-${seg.b.height}`}
+            a={seg.a.pos}
+            b={seg.b.pos}
             opacity={opacity}
-            colorA={p.color}
-            colorB={next.color}
+            colorA={seg.a.color}
+            colorB={seg.b.color}
           />
         )
       })
     }
 
-    const main = pts.slice(0, fadeStartSegIdx + 1)
+    const main = chainPts.slice(0, fadeStartSegIdx + 1)
     const tails: React.JSX.Element[] = []
 
-    for (let i = fadeStartSegIdx; i <= n - 2; i++) {
-      const p = pts[i]
-      const next = pts[i + 1]
+    // Draw tail segments (last 3), but still only if consecutive.
+    for (let i = fadeStartSegIdx; i <= cn - 2; i++) {
+      const a = chainPts[i]
+      const b = chainPts[i + 1]
+      if (b.height !== a.height - 1) continue
+
       const t = (i - fadeStartSegIdx) / Math.max(1, fadeCount - 1)
       const opacity = lerp(1.0, 0.18, t)
       tails.push(
         <Segment
-          key={`${p.height}-${next.height}`}
-          a={p.pos}
-          b={next.pos}
+          key={`${a.height}-${b.height}`}
+          a={a.pos}
+          b={b.pos}
           opacity={opacity}
-          colorA={p.color}
-          colorB={next.color}
+          colorA={a.color}
+          colorB={b.color}
         />,
       )
     }
@@ -411,7 +433,6 @@ function BlocksAndLines({
   }, [pts])
 
   const contextLines = () => {
-    if (showLines) return null
     if (selectedHeight === null) return null
 
     const cur = heightMap.get(selectedHeight)
@@ -420,9 +441,15 @@ function BlocksAndLines({
     const prev = heightMap.get(selectedHeight - 1)
     const next = heightMap.get(selectedHeight + 1)
 
+    const shouldDraw = (a: number, b: number): boolean => {
+      if (!showLines) return true
+      // If the main chain is being drawn, avoid duplicating the exact same segment.
+      return !(mainChainSet.has(a) && mainChainSet.has(b))
+    }
+
     return (
       <group>
-        {prev && (
+        {prev && shouldDraw(prev.height, cur.height) && (
           <Segment
             key={`ctx-${prev.height}-${cur.height}`}
             a={prev.pos}
@@ -432,7 +459,7 @@ function BlocksAndLines({
             colorB={cur.color}
           />
         )}
-        {next && (
+        {next && shouldDraw(cur.height, next.height) && (
           <Segment
             key={`ctx-${cur.height}-${next.height}`}
             a={cur.pos}
@@ -587,6 +614,7 @@ function CameraController({
 
 export default function CyberspaceScene(props: Props): React.JSX.Element {
   const blocks = useMemo(() => props.blocks.map((b) => ({ ...b, position: csToThree(b.position) })), [props.blocks])
+  const mainChainSet = useMemo(() => new Set(props.mainChainHeights ?? []), [props.mainChainHeights])
   const favoriteSet = useMemo(() => new Set(props.favoriteHeights ?? []), [props.favoriteHeights])
   const highlightSet = useMemo(() => new Set(props.highlightHeights ?? []), [props.highlightHeights])
 
@@ -620,6 +648,7 @@ export default function CyberspaceScene(props: Props): React.JSX.Element {
         blocks={blocks}
         selectedHeight={props.selectedHeight}
         showLines={props.showLines}
+        mainChainSet={mainChainSet}
         favoriteSet={favoriteSet}
         highlightSet={highlightSet}
         onSelectHeight={props.onSelectHeight}

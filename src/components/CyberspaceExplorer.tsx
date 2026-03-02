@@ -461,6 +461,7 @@ export default function CyberspaceExplorer(): React.JSX.Element {
           zoomSelectedSeq={zoomSelectedSeq}
           zoomMarkerSeq={zoomMarkerSeq}
           showLines={showLines}
+          mainChainHeights={baseDisplayHeights}
           favoriteHeights={favorites}
           markerPosition={markerPos ? { x: markerPos.xKm, y: markerPos.yKm, z: markerPos.zKm } : null}
           highlightHeights={nearestHeights}
