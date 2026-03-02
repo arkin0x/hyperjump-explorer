@@ -18,12 +18,13 @@ type Props = {
   selectedHeight: number | null
   zoomAllSeq: number
   zoomSelectedSeq: number
+  onSelectHeight?: (height: number) => void
 }
 
 const GRID_COLOR = 0xb000ff
-const GOLD_COLOR = 0xf6c65a
 const EARTH_COLOR = 0x2e86ff
 const BLACK_SUN_COLOR = 0x5a2d82
+const BLOCK_GOLD_COLOR = 0xf6c65a
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n))
@@ -139,40 +140,118 @@ function BlackSun(): React.JSX.Element {
   )
 }
 
-function Segment({ a, b, opacity }: { a: THREE.Vector3; b: THREE.Vector3; opacity: number }): React.JSX.Element {
-  return <Line points={[a, b]} color={GOLD_COLOR} transparent opacity={opacity} lineWidth={1} />
+function ageToRainbowColor(ageT: number): THREE.Color {
+  // ageT: 0=newest, 1=oldest.
+  // Map newest -> violet, oldest -> red.
+  const t = clamp(ageT, 0, 1)
+  const hue = 0.75 * (1 - t) // 0.75≈270° (violet) down to 0° (red)
+  const c = new THREE.Color()
+  c.setHSL(hue, 1.0, 0.55)
+  return c
 }
 
-function BlocksAndLines({ blocks, selectedHeight }: { blocks: BlockPoint[]; selectedHeight: number | null }): React.JSX.Element {
+function Segment({
+  a,
+  b,
+  opacity,
+  colorA,
+  colorB,
+}: {
+  a: THREE.Vector3
+  b: THREE.Vector3
+  opacity: number
+  colorA: THREE.Color
+  colorB: THREE.Color
+}): React.JSX.Element {
+  return (
+    <Line
+      points={[a, b]}
+      vertexColors={[colorA, colorB]}
+      transparent
+      opacity={opacity}
+      lineWidth={1}
+      depthWrite={false}
+    />
+  )
+}
+
+function BlocksAndLines({
+  blocks,
+  selectedHeight,
+  onSelectHeight,
+}: {
+  blocks: BlockPoint[]
+  selectedHeight: number | null
+  onSelectHeight?: (height: number) => void
+}): React.JSX.Element {
   const pts = useMemo(() => {
     const byHeight = [...blocks].sort((a, b) => b.height - a.height)
-    return byHeight.map((b) => ({
-      ...b,
-      pos: new THREE.Vector3(b.position.x, b.position.y, b.position.z),
-    }))
+    const n = byHeight.length
+
+    return byHeight.map((b, i) => {
+      const ageT = n <= 1 ? 0 : i / (n - 1) // 0=newest, 1=oldest
+      return {
+        ...b,
+        ageT,
+        pos: new THREE.Vector3(b.position.x, b.position.y, b.position.z),
+      }
+    })
   }, [blocks])
+
+  const n = pts.length
 
   return (
     <group>
       {pts.map((p) => {
         const isSelected = selectedHeight !== null && p.height === selectedHeight
-        const r = isSelected ? 420 : 250
-        const color = isSelected ? 0xff4d4d : 0xff0000
-        const opacity = p.plane === 1 ? 0.75 : 1.0
+
+        const baseOpacity = 0.9 * (1 - p.ageT) + 0.08
+        const planeOpacity = p.plane === 1 ? 0.75 : 1.0
+        const opacity = isSelected ? 1.0 : baseOpacity * planeOpacity
+
+        const size = isSelected ? 820 : 540
+        const color = isSelected ? 0xffffff : BLOCK_GOLD_COLOR
 
         return (
-          <mesh key={p.height} position={[p.pos.x, p.pos.y, p.pos.z]}>
-            <sphereGeometry args={[r, 20, 14]} />
-            <meshStandardMaterial color={color} transparent opacity={opacity} />
+          <mesh
+            key={p.height}
+            position={[p.pos.x, p.pos.y, p.pos.z]}
+            onClick={(e) => {
+              e.stopPropagation()
+              onSelectHeight?.(p.height)
+            }}
+          >
+            <boxGeometry args={[size, size, size]} />
+            <meshStandardMaterial
+              color={color}
+              transparent
+              opacity={opacity}
+              emissive={isSelected ? BLOCK_GOLD_COLOR : 0x000000}
+              emissiveIntensity={isSelected ? 0.55 : 0}
+            />
           </mesh>
         )
       })}
 
       {pts.slice(0, -1).map((p, i) => {
         const next = pts[i + 1]
-        const t = pts.length <= 1 ? 0 : i / (pts.length - 2)
-        const opacity = 0.85 * (1 - t) + 0.05
-        return <Segment key={`${p.height}-${next.height}`} a={p.pos} b={next.pos} opacity={opacity} />
+
+        const segAgeT = n <= 1 ? 0 : (i + 0.5) / (n - 1)
+        const opacity = 0.85 * (1 - segAgeT) + 0.05
+
+        const cA = ageToRainbowColor(p.ageT)
+        const cB = ageToRainbowColor(next.ageT)
+
+        return (
+          <Segment
+            key={`${p.height}-${next.height}`}
+            a={p.pos}
+            b={next.pos}
+            opacity={opacity}
+            colorA={cA}
+            colorB={cB}
+          />
+        )
       })}
     </group>
   )
@@ -245,7 +324,7 @@ export default function CyberspaceScene(props: Props): React.JSX.Element {
       <Bounds />
       <Earth />
       <BlackSun />
-      <BlocksAndLines blocks={blocks} selectedHeight={props.selectedHeight} />
+      <BlocksAndLines blocks={blocks} selectedHeight={props.selectedHeight} onSelectHeight={props.onSelectHeight} />
 
       <CameraController
         blocks={blocks}
