@@ -7,7 +7,11 @@ const AXIS_BITS = 85n
 const AXIS_UNITS = 1n << AXIS_BITS
 const AXIS_MAX = AXIS_UNITS - 1n
 const AXIS_CENTER = 1n << (AXIS_BITS - 1n)
-const DATASPACE_AXIS_KM = new Decimal('96056')
+// Cantor Height 34 (CYBERSPACE_V2.md 9.2 / 9.7 step 9): units_per_km = 1000 * 2^33.
+// Derived, not hardcoded -- the previous literal 96056 was the Cyberspace v1
+// axis length and was wrong by a factor of ~4.69e7.
+const UNITS_PER_KM = 1000n * (1n << 33n)
+const DATASPACE_AXIS_KM = new Decimal(AXIS_UNITS.toString()).div(UNITS_PER_KM.toString())
 
 function coordToXyz(coord) {
   const plane = coord & 1n
@@ -31,11 +35,14 @@ function axisU85ToKmFromCenter(u85) {
 }
 
 function approxEq(a, b, eps = 1e-6) {
-  return Math.abs(a - b) <= eps
+  // Relative tolerance: dataspace magnitudes reach ~1e12 km, where an absolute
+  // epsilon of 1e-3 is below the resolution of a double.
+  const scale = Math.max(1, Math.abs(a), Math.abs(b))
+  return Math.abs(a - b) <= eps * scale
 }
 
 function main() {
-  const specPath = path.resolve(process.cwd(), 'scripts', '../../cyberspace-spec/visualization_vectors.json')
+  const specPath = process.env.CYBERSPACE_SPEC_VECTORS || path.resolve(process.cwd(), '../cyberspace/visualization_vectors.json')
   const raw = fs.readFileSync(specPath, 'utf8')
   const data = JSON.parse(raw)
 
@@ -65,9 +72,9 @@ function main() {
     const ky = axisU85ToKmFromCenter(got.y)
     const kz = axisU85ToKmFromCenter(got.z)
 
-    if (!approxEq(kx, Number(v.x_km_from_center), 1e-3)) errs.push(`${v.name}: x_km mismatch got=${kx} want=${v.x_km_from_center}`)
-    if (!approxEq(ky, Number(v.y_km_from_center), 1e-3)) errs.push(`${v.name}: y_km mismatch got=${ky} want=${v.y_km_from_center}`)
-    if (!approxEq(kz, Number(v.z_km_from_center), 1e-3)) errs.push(`${v.name}: z_km mismatch got=${kz} want=${v.z_km_from_center}`)
+    if (!approxEq(kx, Number(v.x_km_from_center), 1e-9)) errs.push(`${v.name}: x_km mismatch got=${kx} want=${v.x_km_from_center}`)
+    if (!approxEq(ky, Number(v.y_km_from_center), 1e-9)) errs.push(`${v.name}: y_km mismatch got=${ky} want=${v.y_km_from_center}`)
+    if (!approxEq(kz, Number(v.z_km_from_center), 1e-9)) errs.push(`${v.name}: z_km mismatch got=${kz} want=${v.z_km_from_center}`)
   }
 
   if (errs.length) {

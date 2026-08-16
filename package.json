@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "check:vectors": "node scripts/check_visualization_vectors.mjs"
+    "check:vectors": "node scripts/check_visualization_vectors.mjs",
+    "check:golden": "node scripts/check_golden_vectors.mjs",
+    "check": "npm run check:golden && npm run lint"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.7",

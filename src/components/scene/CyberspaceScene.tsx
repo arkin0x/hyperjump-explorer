@@ -5,7 +5,14 @@ import { Line, OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
 import React, { useEffect, useMemo, useRef } from 'react'
 
-import { dataspaceHalfAxisKm } from '@/lib/cyberspace/coords'
+import {
+  EARTH_EQUATORIAL_RADIUS_KM,
+  EARTH_POLAR_RADIUS_KM,
+  GEO_RADIUS_KM,
+  RENDER_HALF_AXIS,
+  kmToRender,
+  type ScalePreset,
+} from '@/lib/cyberspace/coords'
 
 export type BlockPoint = {
   height: number
@@ -30,7 +37,22 @@ type Props = {
   highlightHeights?: number[]
   markerPosition?: { x: number; y: number; z: number } | null
   onSelectHeight?: (height: number) => void
+  // Named scale presets. The v2 axis spans ~0.48 ly while Earth is ~6,378 km,
+  // so a single default view cannot show both; the camera moves between them.
+  scalePreset?: ScalePreset | null
+  scalePresetSeq?: number
 }
+
+// Point and marker sizes were absolute kilometres tuned to the v1 axis
+// (half = 48,028 km). They are re-expressed here as the same fraction of the
+// half axis, so the corrected scale changes the physics, not the look.
+const V1_HALF_AXIS_KM = 48_028
+const asFractionOfHalfAxis = (km: number) => (km / V1_HALF_AXIS_KM) * RENDER_HALF_AXIS
+
+const POINT_SIZE = asFractionOfHalfAxis(650)
+const POINT_SIZE_FAVORITE = asFractionOfHalfAxis(1050)
+const POINT_SIZE_HIGHLIGHT = asFractionOfHalfAxis(1200)
+const MARKER_RADIUS = asFractionOfHalfAxis(260)
 
 const GRID_COLOR = 0xb000ff
 const EARTH_COLOR = 0x2e86ff
@@ -46,8 +68,12 @@ function lerp(a: number, b: number, t: number): number {
 
 // Render convention: match Cyberspace axes directly.
 // -Z points toward the black sun, +Y toward the top grid, and looking toward -Z, screen-right is +X.
+//
+// Incoming positions are physical kilometres; the scene works in normalised
+// render units (half axis = 1). At the true v2 scale the half axis is ~2.25e12
+// km, which float32 vertex buffers cannot carry alongside Earth-sized features.
 function csToThree(p: { x: number; y: number; z: number }): { x: number; y: number; z: number } {
-  return { x: p.x, y: p.y, z: p.z }
+  return { x: kmToRender(p.x), y: kmToRender(p.y), z: kmToRender(p.z) }
 }
 
 function buildGridPlane(y: number, half: number, n: number): THREE.BufferGeometry {
@@ -71,14 +97,15 @@ function buildGridPlane(y: number, half: number, n: number): THREE.BufferGeometr
   return g
 }
 
-function earthEquatorialRadiusKm(): number {
-  return 6378137 / 1000
+// Earth in render units. At the corrected Cantor Height 34 scale this is
+// ~2.8e-9 of the half axis, so Earth is genuinely a speck until you zoom to it.
+// That is the spec being honest, not a bug: the dataspace axis is ~0.48 ly.
+function earthEquatorialRadius(): number {
+  return kmToRender(EARTH_EQUATORIAL_RADIUS_KM)
 }
 
-function earthPolarRadiusKm(): number {
-  const a = earthEquatorialRadiusKm()
-  const f = 1 / 298.257223563
-  return a * (1 - f)
+function earthPolarRadius(): number {
+  return kmToRender(EARTH_POLAR_RADIUS_KM)
 }
 
 function Ring({ radius, axis }: { radius: number; axis: 'x' | 'y' | 'z' }): React.JSX.Element {
@@ -100,7 +127,7 @@ function Ring({ radius, axis }: { radius: number; axis: 'x' | 'y' | 'z' }): Reac
 }
 
 function Bounds(): React.JSX.Element {
-  const half = dataspaceHalfAxisKm()
+  const half = RENDER_HALF_AXIS
   // ONOSENDAI uses an 8x8 grid (8 squares per side => 9 grid lines).
   const gridLines = 9
 
@@ -120,8 +147,8 @@ function Bounds(): React.JSX.Element {
 }
 
 function Earth(): React.JSX.Element {
-  const a = earthEquatorialRadiusKm()
-  const b = earthPolarRadiusKm()
+  const a = earthEquatorialRadius()
+  const b = earthPolarRadius()
 
   return (
     <group>
@@ -141,8 +168,8 @@ function Earth(): React.JSX.Element {
 }
 
 function BlackSun(): React.JSX.Element {
-  const half = dataspaceHalfAxisKm()
-  const a = earthEquatorialRadiusKm()
+  const half = RENDER_HALF_AXIS
+  const a = earthEquatorialRadius()
 
   // Canonical convention: black sun sits on the -Z boundary and faces +Z (toward the origin).
   return (
@@ -290,7 +317,7 @@ function PointsCloud({
           <bufferAttribute attach="attributes-position" args={[data.positions, 3]} />
           <bufferAttribute attach="attributes-color" args={[data.colors, 3]} />
         </bufferGeometry>
-        <pointsMaterial size={650} sizeAttenuation vertexColors />
+        <pointsMaterial size={POINT_SIZE} sizeAttenuation vertexColors />
       </points>
 
       {data.favPositions.length > 0 && (
@@ -298,7 +325,7 @@ function PointsCloud({
           <bufferGeometry>
             <bufferAttribute attach="attributes-position" args={[data.favPositions, 3]} />
           </bufferGeometry>
-          <pointsMaterial size={1050} sizeAttenuation color={0xffd54d} transparent opacity={0.9} />
+          <pointsMaterial size={POINT_SIZE_FAVORITE} sizeAttenuation color={0xffd54d} transparent opacity={0.9} />
         </points>
       )}
 
@@ -307,7 +334,7 @@ function PointsCloud({
           <bufferGeometry>
             <bufferAttribute attach="attributes-position" args={[data.hlPositions, 3]} />
           </bufferGeometry>
-          <pointsMaterial size={1200} sizeAttenuation color={0xff3b3b} transparent opacity={0.85} />
+          <pointsMaterial size={POINT_SIZE_HIGHLIGHT} sizeAttenuation color={0xff3b3b} transparent opacity={0.85} />
         </points>
       )}
 
@@ -548,6 +575,8 @@ type CameraControllerProps = {
   markerPosition: THREE.Vector3 | null
   zoomMarkerSeq: number
   faceBlackSunSeq?: number
+  scalePreset?: ScalePreset | null
+  scalePresetSeq?: number
 }
 
 function CameraController({
@@ -558,6 +587,8 @@ function CameraController({
   markerPosition,
   zoomMarkerSeq,
   faceBlackSunSeq,
+  scalePreset,
+  scalePresetSeq,
 }: CameraControllerProps): React.JSX.Element {
   const controlsRef = useRef<React.ElementRef<typeof OrbitControls> | null>(null)
   const { camera } = useThree()
@@ -577,12 +608,12 @@ function CameraController({
   }
 
   const zoomToAll = () => {
-    const half = dataspaceHalfAxisKm()
+    const half = RENDER_HALF_AXIS
     applyOrbit(new THREE.Vector3(half * 1.35, half * 0.55, half * 1.25), new THREE.Vector3(0, 0, 0))
   }
 
   const faceBlackSun = () => {
-    const half = dataspaceHalfAxisKm()
+    const half = RENDER_HALF_AXIS
     // Put the camera on +Z looking toward the origin so -Z is visually "forward".
     applyOrbit(new THREE.Vector3(0, half * 0.55, half * 1.35), new THREE.Vector3(0, 0, 0))
   }
@@ -593,8 +624,47 @@ function CameraController({
     // Keep orbit center at Earth, but move camera along the ray through the selected point.
     const r = selectedPos.length()
     const dir = r > 0 ? selectedPos.clone().multiplyScalar(1 / r) : new THREE.Vector3(1, 0.55, 1).normalize()
-    const camPos = dir.multiplyScalar(r + 12_000)
+    const camPos = dir.multiplyScalar(r + kmToRender(12_000))
     applyOrbit(camPos, new THREE.Vector3(0, 0, 0))
+  }
+
+  /**
+   * Move the camera to a named scale rather than rescaling the world.
+   *
+   * This is the approach the reference implementation takes (cyberspace-cli's
+   * `earth_view_altitude_km`): geometry stays physically true and the viewer
+   * travels between scales. Orbit limits are retuned per preset so the mouse
+   * wheel stays usable across ~9 orders of magnitude.
+   */
+  const zoomToScale = (preset: ScalePreset) => {
+    let radius: number
+
+    if (preset === 'earth') {
+      radius = kmToRender(EARTH_EQUATORIAL_RADIUS_KM)
+    } else if (preset === 'geo') {
+      radius = kmToRender(GEO_RADIUS_KM)
+    } else if (preset === 'cloud') {
+      // Fit the hyperjumps actually loaded, rather than the whole axis.
+      let max = 0
+      for (const b of blocks) {
+        max = Math.max(max, Math.hypot(b.position.x, b.position.y, b.position.z))
+      }
+      radius = max > 0 ? max : RENDER_HALF_AXIS
+    } else {
+      radius = RENDER_HALF_AXIS * Math.SQRT2
+    }
+
+    const dir = new THREE.Vector3(1, 0.42, 1).normalize()
+    applyOrbit(dir.multiplyScalar(radius * 2.6), new THREE.Vector3(0, 0, 0))
+
+    const controls = controlsRef.current as unknown as
+      | { minDistance: number; maxDistance: number; update: () => void }
+      | null
+    if (controls) {
+      controls.minDistance = radius * 0.02
+      controls.maxDistance = RENDER_HALF_AXIS * 8
+      controls.update()
+    }
   }
 
   const zoomToMarker = () => {
@@ -603,7 +673,7 @@ function CameraController({
     // Orbit center should be the marker coordinate.
     const r = markerPosition.length()
     const dir = r > 0 ? markerPosition.clone().multiplyScalar(1 / r) : new THREE.Vector3(1, 0.55, 1).normalize()
-    const camPos = markerPosition.clone().add(dir.multiplyScalar(35_000))
+    const camPos = markerPosition.clone().add(dir.multiplyScalar(kmToRender(35_000)))
     applyOrbit(camPos, markerPosition)
   }
 
@@ -626,6 +696,12 @@ function CameraController({
     zoomToMarker()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [zoomMarkerSeq])
+
+  useEffect(() => {
+    if (!scalePresetSeq || !scalePreset) return
+    zoomToScale(scalePreset)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scalePresetSeq])
 
   useEffect(() => {
     if (!faceBlackSunSeq) return
@@ -667,7 +743,7 @@ function SceneContents({
 
       {markerPos && (
         <mesh position={[markerPos.x, markerPos.y, markerPos.z]}>
-          <sphereGeometry args={[260, 18, 14]} />
+          <sphereGeometry args={[MARKER_RADIUS, 18, 14]} />
           <meshStandardMaterial color={0xff2d2d} emissive={0xff2d2d} emissiveIntensity={0.35} />
         </mesh>
       )}
@@ -740,13 +816,13 @@ export default function CyberspaceScene(props: Props): React.JSX.Element {
   }, [props.markerPosition])
 
   if (props.multiView) {
-    const half = dataspaceHalfAxisKm()
+    const half = RENDER_HALF_AXIS
 
     const cell = (axis: Axis, label: string) => (
       <div className="relative h-full w-full overflow-hidden">
         <Canvas
-          camera={{ fov: 55, near: 0.1, far: 2_000_000 }}
-          gl={{ antialias: true, alpha: true }}
+          camera={{ fov: 55, near: 1e-12, far: 50 }}
+          gl={{ antialias: true, alpha: true, logarithmicDepthBuffer: true }}
           style={{ width: '100%', height: '100%' }}
         >
           <FixedAxisCamera axis={axis} half={half} />
@@ -777,8 +853,8 @@ export default function CyberspaceScene(props: Props): React.JSX.Element {
 
   return (
     <Canvas
-      camera={{ fov: 55, near: 0.1, far: 2_000_000 }}
-      gl={{ antialias: true, alpha: true }}
+      camera={{ fov: 55, near: 1e-12, far: 50 }}
+      gl={{ antialias: true, alpha: true, logarithmicDepthBuffer: true }}
       style={{ width: '100%', height: '100%' }}
     >
       <SceneContents
@@ -800,6 +876,8 @@ export default function CyberspaceScene(props: Props): React.JSX.Element {
         markerPosition={markerPos}
         zoomMarkerSeq={props.zoomMarkerSeq}
         faceBlackSunSeq={props.faceBlackSunSeq}
+        scalePreset={props.scalePreset}
+        scalePresetSeq={props.scalePresetSeq}
       />
     </Canvas>
   )

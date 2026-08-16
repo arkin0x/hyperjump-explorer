@@ -3,7 +3,17 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 
 import CyberspaceScene, { type BlockPoint } from '@/components/scene/CyberspaceScene'
-import { coordHexToCoord256, coordHexToPositionKm, coordToXyz, planeName, xyzToSector } from '@/lib/cyberspace/coords'
+import {
+  DATASPACE_AXIS_KM,
+  SCALE_PRESETS,
+  coordHexToCoord256,
+  coordHexToPositionKm,
+  coordToXyz,
+  formatKm,
+  planeName,
+  xyzToSector,
+  type ScalePreset,
+} from '@/lib/cyberspace/coords'
 import type { PositionKm } from '@/lib/cyberspace/coords'
 import { parseHyperjumpAnchor, type HyperjumpAnchor, type NostrEvent } from '@/lib/hyperjumps/anchor'
 import { kind321ByHeightFilter, kind321LatestFilter, NostrRelay, type NostrFilter } from '@/lib/nostr/relay'
@@ -80,6 +90,8 @@ export default function CyberspaceExplorer(): React.JSX.Element {
   const [heightInput, setHeightInput] = useState<string>('')
 
   const [zoomAllSeq, setZoomAllSeq] = useState(0)
+  const [scalePreset, setScalePreset] = useState<ScalePreset | null>(null)
+  const [scalePresetSeq, setScalePresetSeq] = useState(0)
   const [zoomSelectedSeq, setZoomSelectedSeq] = useState(0)
   const [zoomMarkerSeq, setZoomMarkerSeq] = useState(0)
   const [faceBlackSunSeq, setFaceBlackSunSeq] = useState(0)
@@ -485,6 +497,8 @@ export default function CyberspaceExplorer(): React.JSX.Element {
           blocks={sceneBlocks}
           selectedHeight={selectedHeight}
           zoomAllSeq={zoomAllSeq}
+          scalePreset={scalePreset}
+          scalePresetSeq={scalePresetSeq}
           zoomSelectedSeq={zoomSelectedSeq}
           zoomMarkerSeq={zoomMarkerSeq}
           faceBlackSunSeq={faceBlackSunSeq}
@@ -612,6 +626,34 @@ export default function CyberspaceExplorer(): React.JSX.Element {
                 >
                   Zoom to all
                 </button>
+
+                <span className="mx-1 inline-flex items-center gap-1 rounded-lg bg-white/5 px-1.5 py-1">
+                  <span className="px-1 text-[10px] uppercase tracking-wide text-zinc-400" title={
+                    `Dataspace axis is ${formatKm(DATASPACE_AXIS_KM.toNumber())} at Cantor Height 34. ` +
+                    'Earth is ~2.8e-9 of the half axis, so scale is reached by moving the camera, ' +
+                    'not by distorting the geometry.'
+                  }>
+                    Scale
+                  </span>
+                  {(Object.keys(SCALE_PRESETS) as ScalePreset[]).map((key) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => {
+                        setScalePreset(key)
+                        setScalePresetSeq((x) => x + 1)
+                      }}
+                      className={
+                        'rounded-md px-2 py-1 text-[11px] hover:bg-white/15 ' +
+                        (scalePreset === key ? 'bg-purple-500/25 text-purple-200' : 'bg-white/10')
+                      }
+                      disabled={multiView}
+                      title={SCALE_PRESETS[key].label}
+                    >
+                      {key === 'earth' ? 'Earth' : key === 'geo' ? 'GEO' : key === 'cloud' ? 'Cloud' : 'Axis'}
+                    </button>
+                  ))}
+                </span>
 
                 <button
                   type="button"
